@@ -124,6 +124,68 @@ def solve_simply_supported(
     return x, shear, moment, deflection, R_A, R_B
 
 
+def compute_envelopes(
+    L: float,
+    axle_spacings: list[float],
+    axle_loads: list[float],
+    udl_segments: list[tuple[float, float, float]],
+    n_points: int = 501,
+    n_steps: int = 300,
+    EI: float | None = None,
+):
+    """
+    Sweep a vehicle across the beam and return the shear/moment envelopes.
+
+    The front axle is moved from just before the beam (all axles off) to
+    just past the far end (all axles off again).  At every position the
+    full analysis is run and the per-station max/min are tracked.
+
+    Returns
+    -------
+    x : ndarray
+    shear_max, shear_min : ndarray
+    moment_max, moment_min : ndarray
+    defl_max, defl_min : ndarray   (zeros if EI is None)
+    """
+    vehicle_length = sum(axle_spacings)
+
+    # Front-axle sweep range: from behind the left support to past the right
+    start = -vehicle_length
+    end = L + vehicle_length
+    front_positions = np.linspace(start, end, n_steps)
+
+    x = np.linspace(0, L, n_points)
+    shear_max = np.full_like(x, -np.inf)
+    shear_min = np.full_like(x, np.inf)
+    moment_max = np.full_like(x, -np.inf)
+    moment_min = np.full_like(x, np.inf)
+    defl_max = np.full_like(x, -np.inf)
+    defl_min = np.full_like(x, np.inf)
+
+    for front_x in front_positions:
+        axles = vehicle_positions_at_offset(axle_spacings, axle_loads, front_x)
+        on_beam = [(pos, P) for pos, P in axles if 0 <= pos <= L]
+
+        _, shear, moment, deflection, _, _ = solve_simply_supported(
+            L, on_beam, udl_segments, n_points=n_points, EI=EI,
+        )
+
+        shear_max = np.maximum(shear_max, shear)
+        shear_min = np.minimum(shear_min, shear)
+        moment_max = np.maximum(moment_max, moment)
+        moment_min = np.minimum(moment_min, moment)
+        defl_max = np.maximum(defl_max, deflection)
+        defl_min = np.minimum(defl_min, deflection)
+
+    # If no vehicle axles ever landed on beam, envelopes are just the UDL
+    # static values (already captured).  Replace any remaining inf with 0.
+    for arr in (shear_max, shear_min, moment_max, moment_min,
+                defl_max, defl_min):
+        arr[~np.isfinite(arr)] = 0.0
+
+    return x, shear_max, shear_min, moment_max, moment_min, defl_max, defl_min
+
+
 def vehicle_positions_at_offset(
     axle_spacings: list[float],
     axle_loads: list[float],

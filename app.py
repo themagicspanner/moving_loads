@@ -9,9 +9,9 @@ Then open http://127.0.0.1:8050 in a browser.
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
+from dash import Dash, Input, Output, dcc, html, no_update
 
-from beam_analysis import solve_simply_supported, vehicle_positions_at_offset
+from beam_analysis import compute_envelopes, vehicle_positions_at_offset
 
 # ---------------------------------------------------------------------------
 # Preset vehicles
@@ -44,13 +44,19 @@ PRESET_VEHICLES = {
 # ---------------------------------------------------------------------------
 CLR_BEAM = "#4a4a4a"
 CLR_SHEAR = "#1f77b4"
+CLR_SHEAR_MIN = "#aec7e8"
 CLR_MOMENT = "#d62728"
+CLR_MOMENT_MIN = "#f5a0a0"
 CLR_DEFL = "#2ca02c"
+CLR_DEFL_MIN = "#98df8a"
 CLR_AXLE = "#e377c2"
 CLR_UDL = "rgba(255, 165, 0, 0.35)"
 CLR_UDL_LINE = "rgb(255, 140, 0)"
 CLR_REACTION = "#17becf"
 CLR_BG = "#fafafa"
+CLR_ENVELOPE_FILL = "rgba(31,119,180,0.10)"
+CLR_MOMENT_FILL = "rgba(214,39,40,0.10)"
+CLR_DEFL_FILL = "rgba(44,160,44,0.10)"
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +66,6 @@ CLR_BG = "#fafafa"
 def _input_style():
     return {"width": "100%", "padding": "4px 8px", "borderRadius": "4px",
             "border": "1px solid #ccc", "boxSizing": "border-box"}
-
-
-def _btn_style(colour):
-    return {"padding": "6px 16px", "border": "none", "borderRadius": "4px",
-            "background": colour, "color": "#fff", "cursor": "pointer",
-            "fontWeight": "600", "fontSize": "13px"}
 
 
 def _section(title, children):
@@ -105,9 +105,9 @@ app.layout = html.Div(
     style={"fontFamily": "system-ui, -apple-system, sans-serif", "margin": "0 auto",
            "maxWidth": "1400px", "padding": "20px"},
     children=[
-        html.H2("Simply Supported Beam — Moving Load Simulator",
+        html.H2("Simply Supported Beam — Moving Load Envelope",
                  style={"textAlign": "center", "marginBottom": "4px"}),
-        html.P("Define a vehicle and UDL, then animate it crossing the beam.",
+        html.P("Define a vehicle and UDL to see the shear and moment envelopes.",
                style={"textAlign": "center", "color": "#666", "marginTop": "0"}),
 
         html.Div(style={"display": "flex", "gap": "24px", "flexWrap": "wrap"}, children=[
@@ -150,37 +150,21 @@ app.layout = html.Div(
                                     "marginTop": "6px"}),
                 ]),
 
-                _section("Animation", [
-                    _labelled_input("Speed (steps/s)", "anim-speed", 20, 1, 60, 1),
-                    html.Div(style={"display": "flex", "gap": "8px", "marginTop": "8px"},
-                             children=[
-                                 html.Button("▶  Play", id="btn-play", n_clicks=0,
-                                             style=_btn_style("#2196F3")),
-                                 html.Button("⏸  Pause", id="btn-pause", n_clicks=0,
-                                             style=_btn_style("#FF9800")),
-                                 html.Button("⏮  Reset", id="btn-reset", n_clicks=0,
-                                             style=_btn_style("#9E9E9E")),
-                             ]),
-                ]),
-
-                html.Div(style={"marginTop": "12px"}, children=[
-                    html.Label("Vehicle front-axle position",
-                               style={"fontWeight": "600", "fontSize": "13px"}),
-                    dcc.Slider(id="position-slider", min=-20, max=40, step=0.1,
-                               value=-10, marks=None,
-                               tooltip={"placement": "bottom", "always_visible": True}),
+                _section("Envelope resolution", [
+                    _labelled_input("Vehicle positions", "n-steps", 300, 50, 2000, 50,
+                                    tooltip="Number of vehicle positions used to build the envelope"),
                 ]),
             ]),
 
             # ---- RIGHT PANEL ----
             html.Div(style={"flex": "1 1 700px", "minWidth": "500px"}, children=[
-                dcc.Graph(id="main-graph", style={"height": "85vh"},
-                          config={"displayModeBar": False}),
+                dcc.Loading(
+                    dcc.Graph(id="main-graph", style={"height": "85vh"},
+                              config={"displayModeBar": False}),
+                    type="circle",
+                ),
             ]),
         ]),
-
-        dcc.Interval(id="anim-interval", interval=50, n_intervals=0, disabled=True),
-        dcc.Store(id="anim-state", data={"playing": False, "position": -10}),
     ],
 )
 
@@ -201,26 +185,6 @@ def apply_preset(preset_name):
             ", ".join(str(x) for x in v["axle_spacings"]),
         )
     return no_update, no_update
-
-
-# ---------------------------------------------------------------------------
-# Callback: update slider range when span or vehicle changes
-# ---------------------------------------------------------------------------
-@app.callback(
-    Output("position-slider", "min"),
-    Output("position-slider", "max"),
-    Input("beam-span", "value"),
-    Input("axle-spacings", "value"),
-)
-def update_slider_range(span, spacings_text):
-    span = float(span or 20)
-    try:
-        spacings = _parse_csv_floats(spacings_text or "")
-    except ValueError:
-        spacings = []
-    vehicle_length = sum(spacings)
-    margin = max(vehicle_length + 2, 5)
-    return -margin, span + margin
 
 
 # ---------------------------------------------------------------------------
@@ -246,66 +210,10 @@ def update_vehicle_summary(loads_text, spacings_text):
 
 
 # ---------------------------------------------------------------------------
-# Callbacks: play / pause / reset — control the Interval
-# ---------------------------------------------------------------------------
-@app.callback(
-    Output("anim-interval", "disabled"),
-    Output("anim-interval", "interval"),
-    Output("anim-state", "data"),
-    Output("position-slider", "value"),
-    Input("btn-play", "n_clicks"),
-    Input("btn-pause", "n_clicks"),
-    Input("btn-reset", "n_clicks"),
-    Input("anim-interval", "n_intervals"),
-    State("anim-state", "data"),
-    State("anim-speed", "value"),
-    State("position-slider", "min"),
-    State("position-slider", "max"),
-    State("position-slider", "value"),
-    State("beam-span", "value"),
-    prevent_initial_call=True,
-)
-def control_animation(play_clicks, pause_clicks, reset_clicks,
-                      n_intervals, anim_data, speed,
-                      slider_min, slider_max, slider_val, span):
-    ctx = callback_context
-    if not ctx.triggered:
-        return no_update, no_update, no_update, no_update
-
-    trigger = ctx.triggered[0]["prop_id"].split(".")[0]
-    speed = int(speed or 20)
-    interval_ms = max(int(1000 / speed), 16)
-    span = float(span or 20)
-    step = span / 200
-
-    if trigger == "btn-play":
-        pos = anim_data.get("position", slider_val)
-        if pos >= slider_max:
-            pos = slider_min
-        return False, interval_ms, {"playing": True, "position": pos}, pos
-
-    if trigger == "btn-pause":
-        return True, interval_ms, {"playing": False,
-                                   "position": anim_data.get("position", slider_val)}, no_update
-
-    if trigger == "btn-reset":
-        return True, interval_ms, {"playing": False, "position": slider_min}, slider_min
-
-    if trigger == "anim-interval":
-        pos = anim_data.get("position", slider_min) + step
-        if pos > slider_max:
-            return True, interval_ms, {"playing": False, "position": slider_max}, slider_max
-        return False, interval_ms, {"playing": True, "position": pos}, pos
-
-    return no_update, no_update, no_update, no_update
-
-
-# ---------------------------------------------------------------------------
-# Callback: main graph
+# Callback: main graph — envelope plots
 # ---------------------------------------------------------------------------
 @app.callback(
     Output("main-graph", "figure"),
-    Input("position-slider", "value"),
     Input("beam-span", "value"),
     Input("beam-ei", "value"),
     Input("udl-w", "value"),
@@ -313,15 +221,16 @@ def control_animation(play_clicks, pause_clicks, reset_clicks,
     Input("udl-end", "value"),
     Input("axle-loads", "value"),
     Input("axle-spacings", "value"),
+    Input("n-steps", "value"),
 )
-def update_graph(front_x, span, ei, udl_w, udl_a, udl_b,
-                 loads_text, spacings_text):
+def update_graph(span, ei, udl_w, udl_a, udl_b,
+                 loads_text, spacings_text, n_steps):
     span = float(span or 20)
     ei = float(ei or 0)
     udl_w = float(udl_w or 0)
     udl_a = float(udl_a or 0)
     udl_b = float(udl_b or span)
-    front_x = float(front_x if front_x is not None else 0)
+    n_steps = int(n_steps or 300)
 
     try:
         axle_loads = _parse_csv_floats(loads_text or "100")
@@ -334,25 +243,28 @@ def update_graph(front_x, span, ei, udl_w, udl_a, udl_b,
         axle_spacings += [0.0] * (len(axle_loads) - 1 - len(axle_spacings))
     axle_spacings = axle_spacings[: len(axle_loads) - 1]
 
-    all_axles = vehicle_positions_at_offset(axle_spacings, axle_loads, front_x)
-    on_beam = [(pos, P) for pos, P in all_axles if 0 <= pos <= span]
-
     udl_segments = []
     if udl_w > 0 and udl_a < udl_b:
         udl_segments.append((max(udl_a, 0), min(udl_b, span), udl_w))
 
-    x, shear, moment, deflection, R_A, R_B = solve_simply_supported(
-        span, on_beam, udl_segments, n_points=501,
+    # Compute envelopes
+    x, s_max, s_min, m_max, m_min, d_max, d_min = compute_envelopes(
+        span, axle_spacings, axle_loads, udl_segments,
+        n_points=501, n_steps=n_steps,
         EI=ei if ei > 0 else None,
     )
 
     show_deflection = ei > 0
     n_rows = 4 if show_deflection else 3
-    row_titles = ["Beam diagram", "Shear force (kN)", "Bending moment (kN·m)"]
+    row_titles = [
+        "Beam & vehicle schematic",
+        "Shear force envelope (kN)",
+        "Bending moment envelope (kN·m)",
+    ]
     if show_deflection:
-        row_titles.append("Deflection (mm)")
+        row_titles.append("Deflection envelope (mm)")
 
-    heights = [0.30, 0.23, 0.23, 0.24] if show_deflection else [0.34, 0.33, 0.33]
+    heights = [0.25, 0.25, 0.25, 0.25] if show_deflection else [0.28, 0.36, 0.36]
 
     fig = make_subplots(
         rows=n_rows, cols=1, shared_xaxes=True,
@@ -361,47 +273,96 @@ def update_graph(front_x, span, ei, udl_w, udl_a, udl_b,
         vertical_spacing=0.06,
     )
 
-    _draw_beam_diagram(fig, span, all_axles, on_beam, udl_a, udl_b, udl_w, R_A, R_B)
+    # ---- Row 1: Beam schematic ----
+    _draw_beam_schematic(fig, span, axle_spacings, axle_loads,
+                         udl_a, udl_b, udl_w)
 
+    # ---- Row 2: Shear envelope ----
+    # Fill between max and min
     fig.add_trace(go.Scatter(
-        x=x, y=shear, mode="lines", line=dict(color=CLR_SHEAR, width=2),
-        fill="tozeroy", fillcolor="rgba(31,119,180,0.15)", name="Shear",
-        hovertemplate="x=%{x:.2f} m<br>V=%{y:.1f} kN<extra></extra>",
+        x=np.concatenate([x, x[::-1]]),
+        y=np.concatenate([s_max, s_min[::-1]]),
+        fill="toself", fillcolor=CLR_ENVELOPE_FILL,
+        line=dict(width=0), hoverinfo="skip",
+        name="Shear envelope", showlegend=True,
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=x, y=s_max, mode="lines", line=dict(color=CLR_SHEAR, width=2),
+        name="V_max",
+        hovertemplate="x=%{x:.2f} m<br>V_max=%{y:.1f} kN<extra></extra>",
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=x, y=s_min, mode="lines", line=dict(color=CLR_SHEAR_MIN, width=2),
+        name="V_min",
+        hovertemplate="x=%{x:.2f} m<br>V_min=%{y:.1f} kN<extra></extra>",
     ), row=2, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=2, col=1)
 
+    # ---- Row 3: Moment envelope ----
     fig.add_trace(go.Scatter(
-        x=x, y=moment, mode="lines", line=dict(color=CLR_MOMENT, width=2),
-        fill="tozeroy", fillcolor="rgba(214,39,40,0.15)", name="Moment",
-        hovertemplate="x=%{x:.2f} m<br>M=%{y:.1f} kN·m<extra></extra>",
+        x=np.concatenate([x, x[::-1]]),
+        y=np.concatenate([m_max, m_min[::-1]]),
+        fill="toself", fillcolor=CLR_MOMENT_FILL,
+        line=dict(width=0), hoverinfo="skip",
+        name="Moment envelope", showlegend=True,
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x, y=m_max, mode="lines", line=dict(color=CLR_MOMENT, width=2),
+        name="M_max",
+        hovertemplate="x=%{x:.2f} m<br>M_max=%{y:.1f} kN·m<extra></extra>",
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x, y=m_min, mode="lines", line=dict(color=CLR_MOMENT_MIN, width=2),
+        name="M_min",
+        hovertemplate="x=%{x:.2f} m<br>M_min=%{y:.1f} kN·m<extra></extra>",
     ), row=3, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=3, col=1)
 
+    # ---- Row 4: Deflection envelope ----
     if show_deflection:
         fig.add_trace(go.Scatter(
-            x=x, y=deflection * 1000, mode="lines",
-            line=dict(color=CLR_DEFL, width=2),
-            fill="tozeroy", fillcolor="rgba(44,160,44,0.15)", name="Deflection",
-            hovertemplate="x=%{x:.2f} m<br>δ=%{y:.3f} mm<extra></extra>",
+            x=np.concatenate([x, x[::-1]]),
+            y=np.concatenate([d_max * 1000, d_min[::-1] * 1000]),
+            fill="toself", fillcolor=CLR_DEFL_FILL,
+            line=dict(width=0), hoverinfo="skip",
+            name="Deflection envelope", showlegend=True,
+        ), row=4, col=1)
+        fig.add_trace(go.Scatter(
+            x=x, y=d_max * 1000, mode="lines",
+            line=dict(color=CLR_DEFL, width=2), name="d_max",
+            hovertemplate="x=%{x:.2f} m<br>d_max=%{y:.3f} mm<extra></extra>",
+        ), row=4, col=1)
+        fig.add_trace(go.Scatter(
+            x=x, y=d_min * 1000, mode="lines",
+            line=dict(color=CLR_DEFL_MIN, width=2), name="d_min",
+            hovertemplate="x=%{x:.2f} m<br>d_min=%{y:.3f} mm<extra></extra>",
         ), row=4, col=1)
         fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=4, col=1)
         fig.update_yaxes(title_text="mm", row=4, col=1)
 
+    # ---- Peak annotations ----
+    _annotate_peak(fig, x, m_max, "M_max", CLR_MOMENT, "kN·m", row=3)
+    _annotate_peak(fig, x, s_max, "V_max", CLR_SHEAR, "kN", row=2)
+    _annotate_peak(fig, x, s_min, "V_min", CLR_SHEAR_MIN, "kN", row=2, use_min=True)
+
+    # ---- Axis labels ----
     fig.update_yaxes(title_text="kN", row=2, col=1)
     fig.update_yaxes(title_text="kN·m", row=3, col=1)
     fig.update_xaxes(title_text="Position along beam (m)", row=n_rows, col=1)
 
+    # ---- Global layout ----
     fig.update_layout(
-        showlegend=False,
-        margin=dict(l=60, r=20, t=30, b=40),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="center", x=0.5,
+                    font=dict(size=11)),
+        margin=dict(l=60, r=20, t=50, b=40),
         plot_bgcolor=CLR_BG,
         paper_bgcolor="#fff",
         font=dict(size=12),
     )
 
-    x_margin = max(sum(axle_spacings) + 3, 5)
     for i in range(1, n_rows + 1):
-        fig.update_xaxes(range=[-x_margin, span + x_margin], row=i, col=1)
+        fig.update_xaxes(range=[0, span], row=i, col=1)
 
     return fig
 
@@ -410,18 +371,23 @@ def update_graph(front_x, span, ei, udl_w, udl_a, udl_b,
 # Drawing helpers
 # ---------------------------------------------------------------------------
 
-def _draw_beam_diagram(fig, span, all_axles, on_beam, udl_a, udl_b, udl_w,
-                       R_A, R_B):
+def _draw_beam_schematic(fig, span, axle_spacings, axle_loads,
+                         udl_a, udl_b, udl_w):
+    """Draw the beam, supports, vehicle schematic and UDL on row 1."""
     beam_y = 0
 
+    # Beam line
     fig.add_trace(go.Scatter(
         x=[0, span], y=[beam_y, beam_y], mode="lines",
-        line=dict(color=CLR_BEAM, width=6), hoverinfo="skip", name="Beam",
+        line=dict(color=CLR_BEAM, width=6), hoverinfo="skip",
+        name="Beam", showlegend=False,
     ), row=1, col=1)
 
+    # Supports
     _draw_triangle(fig, 0, beam_y, size=0.6, span=span)
     _draw_triangle(fig, span, beam_y, size=0.6, span=span, roller=True)
 
+    # UDL
     if udl_w > 0 and udl_a < udl_b:
         a = max(udl_a, 0)
         b = min(udl_b, span)
@@ -432,7 +398,7 @@ def _draw_beam_diagram(fig, span, all_axles, on_beam, udl_a, udl_b, udl_w,
         fig.add_trace(go.Scatter(
             x=[a, a, b, b], y=[beam_y, beam_y + arrow_h, beam_y + arrow_h, beam_y],
             fill="toself", fillcolor=CLR_UDL, line=dict(color=CLR_UDL_LINE, width=1),
-            hoverinfo="skip", name="UDL",
+            hoverinfo="skip", name="UDL", showlegend=False,
         ), row=1, col=1)
 
         for xi in xs:
@@ -446,45 +412,67 @@ def _draw_beam_diagram(fig, span, all_axles, on_beam, udl_a, udl_b, udl_w,
         fig.add_annotation(
             x=(a + b) / 2, y=beam_y + arrow_h + _arrow_height(20, span) * 0.3,
             text=f"w = {udl_w} kN/m", showarrow=False,
-            font=dict(size=11, color=CLR_UDL_LINE),
-            xref="x", yref="y",
+            font=dict(size=11, color=CLR_UDL_LINE), xref="x", yref="y",
         )
 
-    for pos, P in all_axles:
-        on = 0 <= pos <= span
-        colour = CLR_AXLE if on else "rgba(200,200,200,0.5)"
+    # Vehicle schematic (show axles at midspan as a reference diagram)
+    mid = span / 2
+    front_x = mid + sum(axle_spacings) / 2
+    axles = vehicle_positions_at_offset(axle_spacings, axle_loads, front_x)
+    for pos, P in axles:
         arrow_h = _arrow_height(P, span)
         fig.add_annotation(
             x=pos, y=beam_y, ax=pos, ay=beam_y + arrow_h,
             xref="x", yref="y", axref="x", ayref="y",
             showarrow=True, arrowhead=2, arrowsize=1.2, arrowwidth=2,
-            arrowcolor=colour,
+            arrowcolor=CLR_AXLE,
         )
         fig.add_annotation(
             x=pos, y=beam_y + arrow_h + _arrow_height(10, span) * 0.2,
             text=f"{P:.0f} kN", showarrow=False,
-            font=dict(size=10, color=colour), xref="x", yref="y",
+            font=dict(size=10, color=CLR_AXLE), xref="x", yref="y",
         )
         fig.add_trace(go.Scatter(
             x=[pos], y=[beam_y], mode="markers",
-            marker=dict(size=8, color=colour, symbol="circle"),
+            marker=dict(size=8, color=CLR_AXLE, symbol="circle"),
             hoverinfo="skip", showlegend=False,
         ), row=1, col=1)
 
-    r_offset = _arrow_height(50, span) * 0.5
+    # Direction arrow showing travel
     fig.add_annotation(
-        x=0, y=beam_y - r_offset,
-        text=f"R_A = {R_A:.1f} kN", showarrow=False,
-        font=dict(size=11, color=CLR_REACTION), xref="x", yref="y",
+        x=span * 0.85, y=beam_y + 3.5,
+        ax=span * 0.65, ay=beam_y + 3.5,
+        xref="x", yref="y", axref="x", ayref="y",
+        showarrow=True, arrowhead=2, arrowsize=1.5, arrowwidth=2,
+        arrowcolor="#888",
     )
     fig.add_annotation(
-        x=span, y=beam_y - r_offset,
-        text=f"R_B = {R_B:.1f} kN", showarrow=False,
-        font=dict(size=11, color=CLR_REACTION), xref="x", yref="y",
+        x=span * 0.75, y=beam_y + 4.2,
+        text="direction of travel", showarrow=False,
+        font=dict(size=10, color="#888"), xref="x", yref="y",
     )
 
     fig.update_yaxes(
         visible=False, range=[-2, 5], fixedrange=True, row=1, col=1,
+    )
+
+
+def _annotate_peak(fig, x, y, label, colour, unit, row, use_min=False):
+    """Add an annotation at the peak (max or min) of a curve."""
+    if use_min:
+        idx = int(np.argmin(y))
+    else:
+        idx = int(np.argmax(y))
+    val = y[idx]
+    fig.add_annotation(
+        x=x[idx], y=val,
+        text=f"{label} = {val:.1f} {unit} @ x = {x[idx]:.2f} m",
+        showarrow=True, arrowhead=2, arrowcolor=colour,
+        font=dict(size=10, color=colour),
+        bgcolor="white", bordercolor=colour, borderwidth=1, borderpad=3,
+        ax=0, ay=-30,
+        xref=f"x{row}" if row > 1 else "x",
+        yref=f"y{row}" if row > 1 else "y",
     )
 
 
