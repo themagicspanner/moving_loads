@@ -348,34 +348,37 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
                             udl_a=udl_a, udl_b=udl_b, udl_w=udl_w,
                             R_A=moment_RA, R_B=moment_RB)
 
+    # Negate moments for UK convention (sagging drawn below axis)
     fig.add_trace(go.Scatter(
-        x=x, y=moment_m, mode="lines", line=dict(color=CLR_MOMENT, width=2),
+        x=x, y=-moment_m, mode="lines", line=dict(color=CLR_MOMENT, width=2),
         fill="tozeroy", fillcolor="rgba(214,39,40,0.15)", name="M (critical)",
-        hovertemplate="x=%{x:.2f} m<br>M=%{y:.1f} kN·m<extra></extra>",
+        customdata=moment_m,
+        hovertemplate="x=%{x:.2f} m<br>M=%{customdata:.1f} kN·m<extra></extra>",
         showlegend=False,
     ), row=5, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=5, col=1)
-    _annotate_peak(fig, x, moment_m, "M_max", CLR_MOMENT, "kN·m", row=5)
+    _annotate_peak(fig, x, -moment_m, "M_max", CLR_MOMENT, "kN·m", row=5,
+                   use_min=True, negate_label=True)
 
     # ================================================================
     # MOMENT ENVELOPE — row 6
     # ================================================================
     fig.add_trace(go.Scatter(
         x=np.concatenate([x, x[::-1]]),
-        y=np.concatenate([m_max, m_min[::-1]]),
+        y=np.concatenate([-m_max, -m_min[::-1]]),
         fill="toself", fillcolor=CLR_MOMENT_FILL,
         line=dict(width=0), hoverinfo="skip",
         name="Moment envelope", showlegend=True,
     ), row=6, col=1)
     fig.add_trace(go.Scatter(
-        x=x, y=m_max, mode="lines", line=dict(color=CLR_MOMENT, width=2),
-        name="M_max",
-        hovertemplate="x=%{x:.2f} m<br>M_max=%{y:.1f} kN·m<extra></extra>",
+        x=x, y=-m_max, mode="lines", line=dict(color=CLR_MOMENT, width=2),
+        name="M_max", customdata=m_max,
+        hovertemplate="x=%{x:.2f} m<br>M_max=%{customdata:.1f} kN·m<extra></extra>",
     ), row=6, col=1)
     fig.add_trace(go.Scatter(
-        x=x, y=m_min, mode="lines", line=dict(color=CLR_MOMENT_MIN, width=2),
-        name="M_min",
-        hovertemplate="x=%{x:.2f} m<br>M_min=%{y:.1f} kN·m<extra></extra>",
+        x=x, y=-m_min, mode="lines", line=dict(color=CLR_MOMENT_MIN, width=2),
+        name="M_min", customdata=m_min,
+        hovertemplate="x=%{x:.2f} m<br>M_min=%{customdata:.1f} kN·m<extra></extra>",
     ), row=6, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=6, col=1)
 
@@ -513,22 +516,29 @@ def _draw_beam_with_vehicle(fig, row, span, all_axles,
     )
 
 
-def _annotate_peak(fig, x, y, label, colour, unit, row, use_min=False):
-    """Add an annotation at the peak (max or min) of a curve."""
+def _annotate_peak(fig, x, y, label, colour, unit, row,
+                   use_min=False, negate_label=False):
+    """Add an annotation at the peak (max or min) of a curve.
+
+    If negate_label is True the displayed value is -val (useful when the
+    plotted y-data has been negated for the UK moment convention but the
+    label should show the true positive value).
+    """
     if use_min:
         idx = int(np.argmin(y))
     else:
         idx = int(np.argmax(y))
     val = y[idx]
+    display_val = -val if negate_label else val
     xref = f"x{row}" if row > 1 else "x"
     yref = f"y{row}" if row > 1 else "y"
     fig.add_annotation(
         x=x[idx], y=val,
-        text=f"{label} = {val:.1f} {unit} @ x = {x[idx]:.2f} m",
+        text=f"{label} = {display_val:.1f} {unit} @ x = {x[idx]:.2f} m",
         showarrow=True, arrowhead=2, arrowcolor=colour,
         font=dict(size=10, color=colour),
         bgcolor="white", bordercolor=colour, borderwidth=1, borderpad=3,
-        ax=0, ay=-30,
+        ax=0, ay=30,
         xref=xref, yref=yref,
     )
 
