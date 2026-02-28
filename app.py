@@ -316,6 +316,7 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
     ), row=2, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=2, col=1)
     _annotate_peak(fig, x, shear_v, "V_max", CLR_SHEAR, "kN", row=2)
+    _annotate_peak(fig, x, shear_v, "V_min", CLR_SHEAR_MIN, "kN", row=2, use_min=True)
 
     # ================================================================
     # SHEAR ENVELOPE — row 3

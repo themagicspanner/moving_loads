@@ -188,7 +188,7 @@ def compute_envelopes(
         defl_max = np.maximum(defl_max, deflection)
         defl_min = np.minimum(defl_min, deflection)
 
-        step_shear_peak = np.max(shear)
+        step_shear_peak = np.max(np.abs(shear))
         if step_shear_peak > global_shear_peak:
             global_shear_peak = step_shear_peak
             critical_shear_front_x = front_x
