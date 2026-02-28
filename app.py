@@ -11,7 +11,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from dash import Dash, Input, Output, dcc, html, no_update
 
-from beam_analysis import compute_envelopes, vehicle_positions_at_offset
+from beam_analysis import (
+    compute_envelopes,
+    solve_simply_supported,
+    vehicle_positions_at_offset,
+)
 
 # ---------------------------------------------------------------------------
 # Preset vehicles
@@ -57,6 +61,7 @@ CLR_BG = "#fafafa"
 CLR_ENVELOPE_FILL = "rgba(31,119,180,0.10)"
 CLR_MOMENT_FILL = "rgba(214,39,40,0.10)"
 CLR_DEFL_FILL = "rgba(44,160,44,0.10)"
+CLR_CRITICAL = "rgba(0,0,0,0.08)"
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +112,7 @@ app.layout = html.Div(
     children=[
         html.H2("Simply Supported Beam — Moving Load Envelope",
                  style={"textAlign": "center", "marginBottom": "4px"}),
-        html.P("Define a vehicle and UDL to see the shear and moment envelopes.",
+        html.P("Define a vehicle and UDL to see envelopes and critical load positions.",
                style={"textAlign": "center", "color": "#666", "marginTop": "0"}),
 
         html.Div(style={"display": "flex", "gap": "24px", "flexWrap": "wrap"}, children=[
@@ -159,7 +164,7 @@ app.layout = html.Div(
             # ---- RIGHT PANEL ----
             html.Div(style={"flex": "1 1 700px", "minWidth": "500px"}, children=[
                 dcc.Loading(
-                    dcc.Graph(id="main-graph", style={"height": "85vh"},
+                    dcc.Graph(id="main-graph", style={"height": "90vh"},
                               config={"displayModeBar": False}),
                     type="circle",
                 ),
@@ -210,7 +215,7 @@ def update_vehicle_summary(loads_text, spacings_text):
 
 
 # ---------------------------------------------------------------------------
-# Callback: main graph — envelope plots
+# Callback: main graph
 # ---------------------------------------------------------------------------
 @app.callback(
     Output("main-graph", "figure"),
@@ -247,78 +252,135 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
     if udl_w > 0 and udl_a < udl_b:
         udl_segments.append((max(udl_a, 0), min(udl_b, span), udl_w))
 
-    # Compute envelopes
-    x, s_max, s_min, m_max, m_min, d_max, d_min = compute_envelopes(
+    n_pts = 501
+
+    # --- Compute envelopes + critical positions ---
+    (x, s_max, s_min, m_max, m_min, d_max, d_min,
+     crit_shear_fx, crit_moment_fx) = compute_envelopes(
         span, axle_spacings, axle_loads, udl_segments,
-        n_points=501, n_steps=n_steps,
+        n_points=n_pts, n_steps=n_steps,
         EI=ei if ei > 0 else None,
     )
 
+    # --- Solve the two critical load cases ---
+    def _solve_at(front_x):
+        axles = vehicle_positions_at_offset(axle_spacings, axle_loads, front_x)
+        on_beam = [(p, P) for p, P in axles if 0 <= p <= span]
+        return axles, solve_simply_supported(
+            span, on_beam, udl_segments, n_points=n_pts,
+            EI=ei if ei > 0 else None,
+        )
+
+    shear_axles, (_, shear_v, shear_m, _, shear_RA, shear_RB) = _solve_at(crit_shear_fx)
+    moment_axles, (_, moment_v, moment_m, _, moment_RA, moment_RB) = _solve_at(crit_moment_fx)
+
+    # --- Build figure ---
     show_deflection = ei > 0
-    n_rows = 4 if show_deflection else 3
+    # Rows: beam@shear, SFD, shear envelope, beam@moment, BMD, moment envelope
+    #        + optionally deflection envelope
+    n_rows = 7 if show_deflection else 6
     row_titles = [
-        "Beam & vehicle schematic",
-        "Shear force envelope (kN)",
-        "Bending moment envelope (kN·m)",
+        "Vehicle position for max shear",
+        "Shear force diagram (critical case)",
+        "Shear force envelope",
+        "Vehicle position for max moment",
+        "Bending moment diagram (critical case)",
+        "Bending moment envelope",
     ]
     if show_deflection:
         row_titles.append("Deflection envelope (mm)")
 
-    heights = [0.25, 0.25, 0.25, 0.25] if show_deflection else [0.28, 0.36, 0.36]
+    heights = [0.12, 0.15, 0.15, 0.12, 0.15, 0.15, 0.16] if show_deflection \
+        else [0.13, 0.17, 0.17, 0.13, 0.20, 0.20]
 
     fig = make_subplots(
         rows=n_rows, cols=1, shared_xaxes=True,
         row_heights=heights,
         subplot_titles=row_titles,
-        vertical_spacing=0.06,
+        vertical_spacing=0.04,
     )
 
-    # ---- Row 1: Beam schematic ----
-    _draw_beam_schematic(fig, span, axle_spacings, axle_loads,
-                         udl_a, udl_b, udl_w)
+    # ================================================================
+    # SHEAR CRITICAL CASE — rows 1 & 2
+    # ================================================================
+    _draw_beam_with_vehicle(fig, row=1, span=span,
+                            all_axles=shear_axles,
+                            udl_a=udl_a, udl_b=udl_b, udl_w=udl_w,
+                            R_A=shear_RA, R_B=shear_RB)
 
-    # ---- Row 2: Shear envelope ----
-    # Fill between max and min
+    fig.add_trace(go.Scatter(
+        x=x, y=shear_v, mode="lines", line=dict(color=CLR_SHEAR, width=2),
+        fill="tozeroy", fillcolor="rgba(31,119,180,0.15)", name="V (critical)",
+        hovertemplate="x=%{x:.2f} m<br>V=%{y:.1f} kN<extra></extra>",
+        showlegend=False,
+    ), row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=2, col=1)
+    _annotate_peak(fig, x, shear_v, "V_max", CLR_SHEAR, "kN", row=2)
+
+    # ================================================================
+    # SHEAR ENVELOPE — row 3
+    # ================================================================
     fig.add_trace(go.Scatter(
         x=np.concatenate([x, x[::-1]]),
         y=np.concatenate([s_max, s_min[::-1]]),
         fill="toself", fillcolor=CLR_ENVELOPE_FILL,
         line=dict(width=0), hoverinfo="skip",
         name="Shear envelope", showlegend=True,
-    ), row=2, col=1)
+    ), row=3, col=1)
     fig.add_trace(go.Scatter(
         x=x, y=s_max, mode="lines", line=dict(color=CLR_SHEAR, width=2),
         name="V_max",
         hovertemplate="x=%{x:.2f} m<br>V_max=%{y:.1f} kN<extra></extra>",
-    ), row=2, col=1)
+    ), row=3, col=1)
     fig.add_trace(go.Scatter(
         x=x, y=s_min, mode="lines", line=dict(color=CLR_SHEAR_MIN, width=2),
         name="V_min",
         hovertemplate="x=%{x:.2f} m<br>V_min=%{y:.1f} kN<extra></extra>",
-    ), row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=2, col=1)
+    ), row=3, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=3, col=1)
 
-    # ---- Row 3: Moment envelope ----
+    # ================================================================
+    # MOMENT CRITICAL CASE — rows 4 & 5
+    # ================================================================
+    _draw_beam_with_vehicle(fig, row=4, span=span,
+                            all_axles=moment_axles,
+                            udl_a=udl_a, udl_b=udl_b, udl_w=udl_w,
+                            R_A=moment_RA, R_B=moment_RB)
+
+    fig.add_trace(go.Scatter(
+        x=x, y=moment_m, mode="lines", line=dict(color=CLR_MOMENT, width=2),
+        fill="tozeroy", fillcolor="rgba(214,39,40,0.15)", name="M (critical)",
+        hovertemplate="x=%{x:.2f} m<br>M=%{y:.1f} kN·m<extra></extra>",
+        showlegend=False,
+    ), row=5, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=5, col=1)
+    _annotate_peak(fig, x, moment_m, "M_max", CLR_MOMENT, "kN·m", row=5)
+
+    # ================================================================
+    # MOMENT ENVELOPE — row 6
+    # ================================================================
     fig.add_trace(go.Scatter(
         x=np.concatenate([x, x[::-1]]),
         y=np.concatenate([m_max, m_min[::-1]]),
         fill="toself", fillcolor=CLR_MOMENT_FILL,
         line=dict(width=0), hoverinfo="skip",
         name="Moment envelope", showlegend=True,
-    ), row=3, col=1)
+    ), row=6, col=1)
     fig.add_trace(go.Scatter(
         x=x, y=m_max, mode="lines", line=dict(color=CLR_MOMENT, width=2),
         name="M_max",
         hovertemplate="x=%{x:.2f} m<br>M_max=%{y:.1f} kN·m<extra></extra>",
-    ), row=3, col=1)
+    ), row=6, col=1)
     fig.add_trace(go.Scatter(
         x=x, y=m_min, mode="lines", line=dict(color=CLR_MOMENT_MIN, width=2),
         name="M_min",
         hovertemplate="x=%{x:.2f} m<br>M_min=%{y:.1f} kN·m<extra></extra>",
-    ), row=3, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=3, col=1)
+    ), row=6, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=6, col=1)
 
-    # ---- Row 4: Deflection envelope ----
+    # ================================================================
+    # DEFLECTION ENVELOPE — row 7 (optional)
+    # ================================================================
     if show_deflection:
         fig.add_trace(go.Scatter(
             x=np.concatenate([x, x[::-1]]),
@@ -326,35 +388,32 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
             fill="toself", fillcolor=CLR_DEFL_FILL,
             line=dict(width=0), hoverinfo="skip",
             name="Deflection envelope", showlegend=True,
-        ), row=4, col=1)
+        ), row=7, col=1)
         fig.add_trace(go.Scatter(
             x=x, y=d_max * 1000, mode="lines",
             line=dict(color=CLR_DEFL, width=2), name="d_max",
             hovertemplate="x=%{x:.2f} m<br>d_max=%{y:.3f} mm<extra></extra>",
-        ), row=4, col=1)
+        ), row=7, col=1)
         fig.add_trace(go.Scatter(
             x=x, y=d_min * 1000, mode="lines",
             line=dict(color=CLR_DEFL_MIN, width=2), name="d_min",
             hovertemplate="x=%{x:.2f} m<br>d_min=%{y:.3f} mm<extra></extra>",
-        ), row=4, col=1)
-        fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=4, col=1)
-        fig.update_yaxes(title_text="mm", row=4, col=1)
-
-    # ---- Peak annotations ----
-    _annotate_peak(fig, x, m_max, "M_max", CLR_MOMENT, "kN·m", row=3)
-    _annotate_peak(fig, x, s_max, "V_max", CLR_SHEAR, "kN", row=2)
-    _annotate_peak(fig, x, s_min, "V_min", CLR_SHEAR_MIN, "kN", row=2, use_min=True)
+        ), row=7, col=1)
+        fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=7, col=1)
+        fig.update_yaxes(title_text="mm", row=7, col=1)
 
     # ---- Axis labels ----
     fig.update_yaxes(title_text="kN", row=2, col=1)
-    fig.update_yaxes(title_text="kN·m", row=3, col=1)
+    fig.update_yaxes(title_text="kN", row=3, col=1)
+    fig.update_yaxes(title_text="kN·m", row=5, col=1)
+    fig.update_yaxes(title_text="kN·m", row=6, col=1)
     fig.update_xaxes(title_text="Position along beam (m)", row=n_rows, col=1)
 
     # ---- Global layout ----
     fig.update_layout(
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="center", x=0.5,
-                    font=dict(size=11)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                    xanchor="center", x=0.5, font=dict(size=11)),
         margin=dict(l=60, r=20, t=50, b=40),
         plot_bgcolor=CLR_BG,
         paper_bgcolor="#fff",
@@ -371,21 +430,23 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
 # Drawing helpers
 # ---------------------------------------------------------------------------
 
-def _draw_beam_schematic(fig, span, axle_spacings, axle_loads,
-                         udl_a, udl_b, udl_w):
-    """Draw the beam, supports, vehicle schematic and UDL on row 1."""
+def _draw_beam_with_vehicle(fig, row, span, all_axles,
+                            udl_a, udl_b, udl_w, R_A, R_B):
+    """Draw beam, supports, UDL, vehicle axles and reactions on a given row."""
     beam_y = 0
+    xref = f"x{row}" if row > 1 else "x"
+    yref = f"y{row}" if row > 1 else "y"
 
     # Beam line
     fig.add_trace(go.Scatter(
         x=[0, span], y=[beam_y, beam_y], mode="lines",
         line=dict(color=CLR_BEAM, width=6), hoverinfo="skip",
-        name="Beam", showlegend=False,
-    ), row=1, col=1)
+        showlegend=False,
+    ), row=row, col=1)
 
     # Supports
-    _draw_triangle(fig, 0, beam_y, size=0.6, span=span)
-    _draw_triangle(fig, span, beam_y, size=0.6, span=span, roller=True)
+    _draw_triangle(fig, 0, beam_y, size=0.6, span=span, row=row)
+    _draw_triangle(fig, span, beam_y, size=0.6, span=span, roller=True, row=row)
 
     # UDL
     if udl_w > 0 and udl_a < udl_b:
@@ -396,64 +457,58 @@ def _draw_beam_schematic(fig, span, axle_spacings, axle_loads,
         xs = np.linspace(a, b, n_arrows)
 
         fig.add_trace(go.Scatter(
-            x=[a, a, b, b], y=[beam_y, beam_y + arrow_h, beam_y + arrow_h, beam_y],
-            fill="toself", fillcolor=CLR_UDL, line=dict(color=CLR_UDL_LINE, width=1),
-            hoverinfo="skip", name="UDL", showlegend=False,
-        ), row=1, col=1)
+            x=[a, a, b, b],
+            y=[beam_y, beam_y + arrow_h, beam_y + arrow_h, beam_y],
+            fill="toself", fillcolor=CLR_UDL,
+            line=dict(color=CLR_UDL_LINE, width=1),
+            hoverinfo="skip", showlegend=False,
+        ), row=row, col=1)
 
         for xi in xs:
             fig.add_annotation(
                 x=xi, y=beam_y, ax=xi, ay=beam_y + arrow_h,
-                xref="x", yref="y", axref="x", ayref="y",
+                xref=xref, yref=yref, axref=xref, ayref=yref,
                 showarrow=True, arrowhead=3, arrowsize=1, arrowwidth=1.5,
                 arrowcolor=CLR_UDL_LINE,
             )
 
-        fig.add_annotation(
-            x=(a + b) / 2, y=beam_y + arrow_h + _arrow_height(20, span) * 0.3,
-            text=f"w = {udl_w} kN/m", showarrow=False,
-            font=dict(size=11, color=CLR_UDL_LINE), xref="x", yref="y",
-        )
-
-    # Vehicle schematic (show axles at midspan as a reference diagram)
-    mid = span / 2
-    front_x = mid + sum(axle_spacings) / 2
-    axles = vehicle_positions_at_offset(axle_spacings, axle_loads, front_x)
-    for pos, P in axles:
+    # Axle loads
+    for pos, P in all_axles:
+        on = 0 <= pos <= span
+        colour = CLR_AXLE if on else "rgba(200,200,200,0.5)"
         arrow_h = _arrow_height(P, span)
         fig.add_annotation(
             x=pos, y=beam_y, ax=pos, ay=beam_y + arrow_h,
-            xref="x", yref="y", axref="x", ayref="y",
+            xref=xref, yref=yref, axref=xref, ayref=yref,
             showarrow=True, arrowhead=2, arrowsize=1.2, arrowwidth=2,
-            arrowcolor=CLR_AXLE,
+            arrowcolor=colour,
         )
         fig.add_annotation(
             x=pos, y=beam_y + arrow_h + _arrow_height(10, span) * 0.2,
             text=f"{P:.0f} kN", showarrow=False,
-            font=dict(size=10, color=CLR_AXLE), xref="x", yref="y",
+            font=dict(size=10, color=colour), xref=xref, yref=yref,
         )
         fig.add_trace(go.Scatter(
             x=[pos], y=[beam_y], mode="markers",
-            marker=dict(size=8, color=CLR_AXLE, symbol="circle"),
+            marker=dict(size=8, color=colour, symbol="circle"),
             hoverinfo="skip", showlegend=False,
-        ), row=1, col=1)
+        ), row=row, col=1)
 
-    # Direction arrow showing travel
+    # Reaction labels
+    r_offset = _arrow_height(50, span) * 0.5
     fig.add_annotation(
-        x=span * 0.85, y=beam_y + 3.5,
-        ax=span * 0.65, ay=beam_y + 3.5,
-        xref="x", yref="y", axref="x", ayref="y",
-        showarrow=True, arrowhead=2, arrowsize=1.5, arrowwidth=2,
-        arrowcolor="#888",
+        x=0, y=beam_y - r_offset,
+        text=f"R_A = {R_A:.1f} kN", showarrow=False,
+        font=dict(size=11, color=CLR_REACTION), xref=xref, yref=yref,
     )
     fig.add_annotation(
-        x=span * 0.75, y=beam_y + 4.2,
-        text="direction of travel", showarrow=False,
-        font=dict(size=10, color="#888"), xref="x", yref="y",
+        x=span, y=beam_y - r_offset,
+        text=f"R_B = {R_B:.1f} kN", showarrow=False,
+        font=dict(size=11, color=CLR_REACTION), xref=xref, yref=yref,
     )
 
     fig.update_yaxes(
-        visible=False, range=[-2, 5], fixedrange=True, row=1, col=1,
+        visible=False, range=[-2, 5], fixedrange=True, row=row, col=1,
     )
 
 
@@ -464,6 +519,8 @@ def _annotate_peak(fig, x, y, label, colour, unit, row, use_min=False):
     else:
         idx = int(np.argmax(y))
     val = y[idx]
+    xref = f"x{row}" if row > 1 else "x"
+    yref = f"y{row}" if row > 1 else "y"
     fig.add_annotation(
         x=x[idx], y=val,
         text=f"{label} = {val:.1f} {unit} @ x = {x[idx]:.2f} m",
@@ -471,12 +528,11 @@ def _annotate_peak(fig, x, y, label, colour, unit, row, use_min=False):
         font=dict(size=10, color=colour),
         bgcolor="white", bordercolor=colour, borderwidth=1, borderpad=3,
         ax=0, ay=-30,
-        xref=f"x{row}" if row > 1 else "x",
-        yref=f"y{row}" if row > 1 else "y",
+        xref=xref, yref=yref,
     )
 
 
-def _draw_triangle(fig, x0, y0, size, span, roller=False):
+def _draw_triangle(fig, x0, y0, size, span, roller=False, row=1):
     s = size * span / 20
     h = s * 1.2
     xs = [x0 - s / 2, x0, x0 + s / 2, x0 - s / 2]
@@ -485,13 +541,13 @@ def _draw_triangle(fig, x0, y0, size, span, roller=False):
         x=xs, y=ys, mode="lines", fill="toself",
         fillcolor="rgba(100,100,100,0.3)", line=dict(color=CLR_BEAM, width=1.5),
         hoverinfo="skip", showlegend=False,
-    ), row=1, col=1)
+    ), row=row, col=1)
     if roller:
         fig.add_trace(go.Scatter(
             x=[x0], y=[y0 - h - s * 0.25], mode="markers",
             marker=dict(size=6, color=CLR_BEAM, symbol="circle-open", line_width=1.5),
             hoverinfo="skip", showlegend=False,
-        ), row=1, col=1)
+        ), row=row, col=1)
 
 
 def _arrow_height(load, span):

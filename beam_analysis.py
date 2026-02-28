@@ -134,7 +134,8 @@ def compute_envelopes(
     EI: float | None = None,
 ):
     """
-    Sweep a vehicle across the beam and return the shear/moment envelopes.
+    Sweep a vehicle across the beam and return the shear/moment envelopes,
+    plus the critical vehicle positions for maximum shear and moment.
 
     The front axle is moved from just before the beam (all axles off) to
     just past the far end (all axles off again).  At every position the
@@ -146,6 +147,10 @@ def compute_envelopes(
     shear_max, shear_min : ndarray
     moment_max, moment_min : ndarray
     defl_max, defl_min : ndarray   (zeros if EI is None)
+    critical_shear_front_x : float
+        Front-axle position that produces the global maximum shear value.
+    critical_moment_front_x : float
+        Front-axle position that produces the global maximum moment value.
     """
     vehicle_length = sum(axle_spacings)
 
@@ -162,6 +167,12 @@ def compute_envelopes(
     defl_max = np.full_like(x, -np.inf)
     defl_min = np.full_like(x, np.inf)
 
+    # Track the global peak shear and moment, and which front_x caused them
+    global_shear_peak = -np.inf
+    global_moment_peak = -np.inf
+    critical_shear_front_x = 0.0
+    critical_moment_front_x = 0.0
+
     for front_x in front_positions:
         axles = vehicle_positions_at_offset(axle_spacings, axle_loads, front_x)
         on_beam = [(pos, P) for pos, P in axles if 0 <= pos <= L]
@@ -177,13 +188,25 @@ def compute_envelopes(
         defl_max = np.maximum(defl_max, deflection)
         defl_min = np.minimum(defl_min, deflection)
 
+        step_shear_peak = np.max(shear)
+        if step_shear_peak > global_shear_peak:
+            global_shear_peak = step_shear_peak
+            critical_shear_front_x = front_x
+
+        step_moment_peak = np.max(moment)
+        if step_moment_peak > global_moment_peak:
+            global_moment_peak = step_moment_peak
+            critical_moment_front_x = front_x
+
     # If no vehicle axles ever landed on beam, envelopes are just the UDL
     # static values (already captured).  Replace any remaining inf with 0.
     for arr in (shear_max, shear_min, moment_max, moment_min,
                 defl_max, defl_min):
         arr[~np.isfinite(arr)] = 0.0
 
-    return x, shear_max, shear_min, moment_max, moment_min, defl_max, defl_min
+    return (x, shear_max, shear_min, moment_max, moment_min,
+            defl_max, defl_min,
+            critical_shear_front_x, critical_moment_front_x)
 
 
 def vehicle_positions_at_offset(
