@@ -18,28 +18,48 @@ from beam_analysis import (
 )
 
 # ---------------------------------------------------------------------------
-# Preset vehicles
+# Preset vehicles — EN 1991-2 Traffic load models
 # ---------------------------------------------------------------------------
+# LM1 Tandem System characteristic axle loads (EN 1991-2 Table 4.2, α = 1.0).
+# LM1 also requires a UDL component (9 kN/m² Lane 1, 2.5 kN/m² Lanes 2-3);
+# multiply by the notional lane width (typically 3.0 m) and apply via the UDL
+# input below.
+#
+# LM3 axle configurations are simplified equal-load representations.
+# Verify against the UK National Annex (NA to BS EN 1991-2) Table NA.3 for
+# detailed axle arrangements.
 PRESET_VEHICLES = {
-    "Single Axle": {
-        "axle_loads": [100],
+    # ── EN 1991-2 §4.3.2  Load Model 1 – Tandem System ─────────────────
+    "LM1 – Lane 1 Tandem  (2 × 300 kN)": {
+        "axle_loads": [300, 300],
+        "axle_spacings": [1.2],
+    },
+    "LM1 – Lane 2 Tandem  (2 × 200 kN)": {
+        "axle_loads": [200, 200],
+        "axle_spacings": [1.2],
+    },
+    "LM1 – Lane 3 Tandem  (2 × 100 kN)": {
+        "axle_loads": [100, 100],
+        "axle_spacings": [1.2],
+    },
+    # ── EN 1991-2 §4.3.3  Load Model 2 – Single Axle ───────────────────
+    "LM2 – Single Axle  (400 kN)": {
+        "axle_loads": [400],
         "axle_spacings": [],
     },
-    "Two-Axle Truck": {
-        "axle_loads": [80, 120],
-        "axle_spacings": [4.5],
+    # ── EN 1991-2 §4.3.4 / UK NA  Load Model 3 – Special Vehicles ───────
+    # Equal-load simplified models; 3 bogie groups with 6 m gaps between them.
+    "LM3 – SV80  (8 × 100 kN = 800 kN)": {
+        "axle_loads": [100, 100, 100, 100, 100, 100, 100, 100],
+        "axle_spacings": [1.35, 1.35, 6.0, 1.35, 1.35, 6.0, 1.35],
     },
-    "Three-Axle Truck": {
-        "axle_loads": [60, 100, 100],
-        "axle_spacings": [3.6, 1.2],
+    "LM3 – SV100  (10 × 100 kN = 1000 kN)": {
+        "axle_loads": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
+        "axle_spacings": [1.35, 1.35, 6.0, 1.35, 1.35, 1.35, 1.35, 6.0, 1.35],
     },
-    "HL-93 (Truck)": {
-        "axle_loads": [35, 145, 145],
-        "axle_spacings": [4.3, 4.3],
-    },
-    "Five-Axle Semi": {
-        "axle_loads": [50, 80, 80, 90, 90],
-        "axle_spacings": [3.6, 1.2, 6.0, 1.2],
+    "LM3 – SV150  (12 × 125 kN = 1500 kN)": {
+        "axle_loads": [125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125],
+        "axle_spacings": [1.35, 1.35, 6.0, 1.35, 1.35, 1.35, 1.35, 1.35, 1.35, 6.0, 1.35],
     },
 }
 
@@ -112,7 +132,7 @@ app.layout = html.Div(
     children=[
         html.H2("Simply Supported Beam — Moving Load Envelope",
                  style={"textAlign": "center", "marginBottom": "4px"}),
-        html.P("Define a vehicle and UDL to see envelopes and critical load positions.",
+        html.P("EN 1991-2 load models — define a vehicle and UDL to see envelopes and critical load positions.",
                style={"textAlign": "center", "color": "#666", "marginTop": "0"}),
 
         html.Div(style={"display": "flex", "gap": "24px", "flexWrap": "wrap"}, children=[
@@ -137,22 +157,30 @@ app.layout = html.Div(
                     dcc.Dropdown(
                         id="vehicle-preset",
                         options=[{"label": k, "value": k} for k in PRESET_VEHICLES],
-                        value="Three-Axle Truck",
+                        value="LM1 – Lane 1 Tandem  (2 × 300 kN)",
                         clearable=False,
                         style={"marginBottom": "8px"},
                     ),
                     html.Label("Axle loads (kN) — comma separated",
                                style={"fontWeight": "600", "fontSize": "13px"}),
-                    dcc.Input(id="axle-loads", type="text", value="60, 100, 100",
+                    dcc.Input(id="axle-loads", type="text", value="300, 300",
                               style=_input_style(), debounce=True),
                     html.Label("Axle spacings (m) — comma separated",
                                style={"fontWeight": "600", "fontSize": "13px",
                                        "marginTop": "6px"}),
-                    dcc.Input(id="axle-spacings", type="text", value="3.6, 1.2",
+                    dcc.Input(id="axle-spacings", type="text", value="1.2",
                               style=_input_style(), debounce=True),
                     html.Div(id="vehicle-summary",
                              style={"fontSize": "12px", "color": "#555",
                                     "marginTop": "6px"}),
+                    html.Div(
+                        "LM1 also requires a UDL: Lane 1 → 27 kN/m, "
+                        "Lanes 2-3 → 7.5 kN/m (9 or 2.5 kN/m² × 3 m lane width). "
+                        "Apply via the UDL panel above.",
+                        id="lm1-udl-hint",
+                        style={"fontSize": "11px", "color": "#888",
+                               "marginTop": "4px", "fontStyle": "italic"},
+                    ),
                 ]),
 
                 _section("Envelope resolution", [
@@ -180,16 +208,22 @@ app.layout = html.Div(
 @app.callback(
     Output("axle-loads", "value"),
     Output("axle-spacings", "value"),
+    Output("lm1-udl-hint", "style"),
     Input("vehicle-preset", "value"),
 )
 def apply_preset(preset_name):
+    _hidden = {"display": "none"}
+    _visible = {"fontSize": "11px", "color": "#888",
+                "marginTop": "4px", "fontStyle": "italic"}
     if preset_name and preset_name in PRESET_VEHICLES:
         v = PRESET_VEHICLES[preset_name]
+        show_hint = _visible if preset_name.startswith("LM1") else _hidden
         return (
             ", ".join(str(x) for x in v["axle_loads"]),
             ", ".join(str(x) for x in v["axle_spacings"]),
+            show_hint,
         )
-    return no_update, no_update
+    return no_update, no_update, no_update
 
 
 # ---------------------------------------------------------------------------
