@@ -25,9 +25,9 @@ from beam_analysis import (
 # multiply by the notional lane width (typically 3.0 m) and apply via the UDL
 # input below.
 #
-# LM3 axle configurations are simplified equal-load representations.
-# Verify against the UK National Annex (NA to BS EN 1991-2) Table NA.3 for
-# detailed axle arrangements.
+# LM3 SV80 axle layout matches UK NA to BS EN 1991-2 Figure NA.1.
+# SV100/SV150 are simplified equal-load representations — verify against
+# UK NA Table NA.3 for detailed axle arrangements.
 PRESET_VEHICLES = {
     # ── EN 1991-2 §4.3.2  Load Model 1 – Tandem System ─────────────────
     "LM1 – Lane 1 Tandem  (2 × 300 kN)": {
@@ -48,11 +48,23 @@ PRESET_VEHICLES = {
         "axle_spacings": [],
     },
     # ── EN 1991-2 §4.3.4 / UK NA  Load Model 3 – Special Vehicles ───────
-    # Equal-load simplified models; 3 bogie groups with 6 m gaps between them.
-    "LM3 – SV80  (8 × 100 kN = 800 kN)": {
-        "axle_loads": [100, 100, 100, 100, 100, 100, 100, 100],
-        "axle_spacings": [1.35, 1.35, 6.0, 1.35, 1.35, 6.0, 1.35],
+    # SV80 per UK NA to BS EN 1991-2: 6 axles of 130 kN (780 kN total),
+    # two groups of 3 at 1.2 m; gap between groups is 1.2, 5.0 or 9.0 m
+    # (use whichever is critical for the span being checked).
+    "LM3 – SV80  gap 1.2 m  (6 × 130 kN)": {
+        "axle_loads": [130, 130, 130, 130, 130, 130],
+        "axle_spacings": [1.2, 1.2, 1.2, 1.2, 1.2],
     },
+    "LM3 – SV80  gap 5.0 m  (6 × 130 kN)": {
+        "axle_loads": [130, 130, 130, 130, 130, 130],
+        "axle_spacings": [1.2, 1.2, 5.0, 1.2, 1.2],
+    },
+    "LM3 – SV80  gap 9.0 m  (6 × 130 kN)": {
+        "axle_loads": [130, 130, 130, 130, 130, 130],
+        "axle_spacings": [1.2, 1.2, 9.0, 1.2, 1.2],
+    },
+    # SV100 / SV150 – simplified equal-load representations; verify axle
+    # arrangements against UK NA Table NA.3.
     "LM3 – SV100  (10 × 100 kN = 1000 kN)": {
         "axle_loads": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
         "axle_spacings": [1.35, 1.35, 6.0, 1.35, 1.35, 1.35, 1.35, 6.0, 1.35],
