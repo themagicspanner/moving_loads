@@ -9,7 +9,7 @@ Then open http://127.0.0.1:8050 in a browser.
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dash import Dash, Input, Output, dcc, html, no_update
+from dash import Dash, Input, Output, State, dcc, html, no_update
 
 from beam_analysis import (
     compute_envelopes,
@@ -26,8 +26,8 @@ from beam_analysis import (
 # input below.
 #
 # LM3 SV80, SV100, SV196 axle layouts match UK NA to BS EN 1991-2.
-# Each SV vehicle has three gap variants (1.2, 5.0, 9.0 m) — use
-# whichever is critical for the span being checked.
+# The variable inter-bogie gap (1.2, 5.0, 9.0 m) is automatically swept
+# and the critical (worst-case) gap is selected for each span.
 PRESET_VEHICLES = {
     # ── EN 1991-2 §4.3.2  Load Model 1 – Tandem System ─────────────────
     "LM1 – Lane 1 Tandem  (2 × 300 kN)": {
@@ -48,47 +48,25 @@ PRESET_VEHICLES = {
         "axle_spacings": [],
     },
     # ── EN 1991-2 §4.3.4 / UK NA  Load Model 3 – Special Vehicles ───────
-    # SV80 per UK NA to BS EN 1991-2: 6 axles of 130 kN (780 kN total),
-    # two groups of 3 at 1.2 m; gap between groups is 1.2, 5.0 or 9.0 m
-    # (use whichever is critical for the span being checked).
-    "LM3 – SV80  gap 1.2 m  (6 × 130 kN)": {
+    # SV80 per UK NA: 6 axles of 130 kN (780 kN total), two groups of 3
+    # at 1.2 m; variable gap between groups auto-selected from 1.2/5.0/9.0 m.
+    "LM3 – SV80  (6 × 130 kN)": {
         "axle_loads": [130, 130, 130, 130, 130, 130],
         "axle_spacings": [1.2, 1.2, 1.2, 1.2, 1.2],
+        "variable_gap": {"index": 2, "values": [1.2, 5.0, 9.0]},
     },
-    "LM3 – SV80  gap 5.0 m  (6 × 130 kN)": {
-        "axle_loads": [130, 130, 130, 130, 130, 130],
-        "axle_spacings": [1.2, 1.2, 5.0, 1.2, 1.2],
-    },
-    "LM3 – SV80  gap 9.0 m  (6 × 130 kN)": {
-        "axle_loads": [130, 130, 130, 130, 130, 130],
-        "axle_spacings": [1.2, 1.2, 9.0, 1.2, 1.2],
-    },
-    # SV100 per UK NA: 6 axles of 165 kN (990 kN total), same layout as SV80.
-    "LM3 – SV100  gap 1.2 m  (6 × 165 kN)": {
+    # SV100 per UK NA: 6 axles of 165 kN (990 kN total), same layout.
+    "LM3 – SV100  (6 × 165 kN)": {
         "axle_loads": [165, 165, 165, 165, 165, 165],
         "axle_spacings": [1.2, 1.2, 1.2, 1.2, 1.2],
+        "variable_gap": {"index": 2, "values": [1.2, 5.0, 9.0]},
     },
-    "LM3 – SV100  gap 5.0 m  (6 × 165 kN)": {
-        "axle_loads": [165, 165, 165, 165, 165, 165],
-        "axle_spacings": [1.2, 1.2, 5.0, 1.2, 1.2],
-    },
-    "LM3 – SV100  gap 9.0 m  (6 × 165 kN)": {
-        "axle_loads": [165, 165, 165, 165, 165, 165],
-        "axle_spacings": [1.2, 1.2, 9.0, 1.2, 1.2],
-    },
-    # SV196 per UK NA: 8 × 165 kN trailer group + 180, 180, 100 kN tractor
-    # (1780 kN total). Variable gap between the two 4-axle trailer bogies.
-    "LM3 – SV196  gap 1.2 m  (1780 kN)": {
+    # SV196 per UK NA: 8 × 165 kN trailer + 180, 180, 100 kN tractor (1780 kN).
+    # Variable gap between the two 4-axle trailer bogies.
+    "LM3 – SV196  (1780 kN)": {
         "axle_loads": [165, 165, 165, 165, 165, 165, 165, 165, 180, 180, 100],
         "axle_spacings": [1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 4.0, 1.6, 4.4],
-    },
-    "LM3 – SV196  gap 5.0 m  (1780 kN)": {
-        "axle_loads": [165, 165, 165, 165, 165, 165, 165, 165, 180, 180, 100],
-        "axle_spacings": [1.2, 1.2, 1.2, 5.0, 1.2, 1.2, 1.2, 4.0, 1.6, 4.4],
-    },
-    "LM3 – SV196  gap 9.0 m  (1780 kN)": {
-        "axle_loads": [165, 165, 165, 165, 165, 165, 165, 165, 180, 180, 100],
-        "axle_spacings": [1.2, 1.2, 1.2, 9.0, 1.2, 1.2, 1.2, 4.0, 1.6, 4.4],
+        "variable_gap": {"index": 3, "values": [1.2, 5.0, 9.0]},
     },
 }
 
@@ -290,9 +268,10 @@ def update_vehicle_summary(loads_text, spacings_text):
     Input("axle-loads", "value"),
     Input("axle-spacings", "value"),
     Input("n-steps", "value"),
+    State("vehicle-preset", "value"),
 )
 def update_graph(span, ei, udl_w, udl_a, udl_b,
-                 loads_text, spacings_text, n_steps):
+                 loads_text, spacings_text, n_steps, preset_name):
     span = float(span or 20)
     ei = float(ei or 0)
     udl_w = float(udl_w or 0)
@@ -316,26 +295,79 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
         udl_segments.append((max(udl_a, 0), min(udl_b, span), udl_w))
 
     n_pts = 501
+    EI_val = ei if ei > 0 else None
 
-    # --- Compute envelopes + critical positions ---
-    (x, s_max, s_min, m_max, m_min, d_max, d_min,
-     crit_shear_fx, crit_moment_fx) = compute_envelopes(
-        span, axle_spacings, axle_loads, udl_segments,
-        n_points=n_pts, n_steps=n_steps,
-        EI=ei if ei > 0 else None,
-    )
+    # --- Build list of spacing variants to sweep ---
+    # For SV vehicles with a variable inter-bogie gap, run all gap values
+    # and keep the worst-case envelope.
+    preset = PRESET_VEHICLES.get(preset_name) if preset_name else None
+    vgap = preset.get("variable_gap") if preset else None
+
+    spacing_variants = []
+    if vgap is not None:
+        gap_idx = vgap["index"]
+        for gap in vgap["values"]:
+            variant = list(axle_spacings)
+            variant[gap_idx] = gap
+            spacing_variants.append(variant)
+    else:
+        spacing_variants.append(list(axle_spacings))
+
+    # --- Compute envelopes (worst-case across all gap variants) ---
+    x = s_max = s_min = m_max = m_min = d_max = d_min = None
+    crit_shear_fx = crit_moment_fx = 0.0
+    best_shear_spacings = best_moment_spacings = axle_spacings
+    best_shear_abs = 0.0
+    best_moment_val = 0.0
+
+    for sp in spacing_variants:
+        (xi, sv_max, sv_min, mv_max, mv_min, dv_max, dv_min,
+         cs_fx, cm_fx) = compute_envelopes(
+            span, sp, axle_loads, udl_segments,
+            n_points=n_pts, n_steps=n_steps, EI=EI_val,
+        )
+        if x is None:
+            x = xi
+            s_max, s_min = sv_max, sv_min
+            m_max, m_min = mv_max, mv_min
+            d_max, d_min = dv_max, dv_min
+            crit_shear_fx, crit_moment_fx = cs_fx, cm_fx
+            best_shear_spacings = best_moment_spacings = sp
+            best_shear_abs = max(abs(sv_max.max()), abs(sv_min.min()))
+            best_moment_val = mv_max.max()
+        else:
+            # Element-wise worst-case envelopes
+            s_max = np.maximum(s_max, sv_max)
+            s_min = np.minimum(s_min, sv_min)
+            m_max = np.maximum(m_max, mv_max)
+            m_min = np.minimum(m_min, mv_min)
+            if dv_max is not None and d_max is not None:
+                d_max = np.maximum(d_max, dv_max)
+                d_min = np.minimum(d_min, dv_min)
+            # Track which gap produced the worst shear / moment
+            shear_abs = max(abs(sv_max.max()), abs(sv_min.min()))
+            if shear_abs > best_shear_abs:
+                best_shear_abs = shear_abs
+                crit_shear_fx = cs_fx
+                best_shear_spacings = sp
+            moment_val = mv_max.max()
+            if moment_val > best_moment_val:
+                best_moment_val = moment_val
+                crit_moment_fx = cm_fx
+                best_moment_spacings = sp
 
     # --- Solve the two critical load cases ---
-    def _solve_at(front_x):
-        axles = vehicle_positions_at_offset(axle_spacings, axle_loads, front_x)
+    def _solve_at(front_x, spacings):
+        axles = vehicle_positions_at_offset(spacings, axle_loads, front_x)
         on_beam = [(p, P) for p, P in axles if 0 <= p <= span]
         return axles, solve_simply_supported(
-            span, on_beam, udl_segments, n_points=n_pts,
-            EI=ei if ei > 0 else None,
+            span, on_beam, udl_segments, n_points=n_pts, EI=EI_val,
         )
 
-    shear_axles, (_, shear_v, shear_m, _, shear_RA, shear_RB) = _solve_at(crit_shear_fx)
-    moment_axles, (_, moment_v, moment_m, _, moment_RA, moment_RB) = _solve_at(crit_moment_fx)
+    shear_axles, (_, shear_v, shear_m, _, shear_RA, shear_RB) = \
+        _solve_at(crit_shear_fx, best_shear_spacings)
+    moment_axles, (_, moment_v, moment_m, _, moment_RA, moment_RB) = \
+        _solve_at(crit_moment_fx, best_moment_spacings)
 
     # --- Build figure ---
     show_deflection = ei > 0
