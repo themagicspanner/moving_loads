@@ -119,13 +119,6 @@ def _labelled_input(label, id_, value, mn, mx, step, tooltip=None):
     return html.Div(children, style={"marginBottom": "6px"})
 
 
-def _parse_csv_floats(text: str) -> list[float]:
-    """Parse a comma-separated string of numbers."""
-    if not text or not text.strip():
-        return []
-    parts = [s.strip() for s in text.split(",") if s.strip()]
-    return [float(p) for p in parts]
-
 
 # ---------------------------------------------------------------------------
 # App & layout
@@ -160,7 +153,7 @@ app.layout = html.Div(
                 ]),
 
                 _section("Vehicle", [
-                    html.Label("Preset", style={"fontWeight": "600", "fontSize": "13px"}),
+                    html.Label("Load model", style={"fontWeight": "600", "fontSize": "13px"}),
                     dcc.Dropdown(
                         id="vehicle-preset",
                         options=[{"label": k, "value": k} for k in PRESET_VEHICLES],
@@ -168,15 +161,6 @@ app.layout = html.Div(
                         clearable=False,
                         style={"marginBottom": "8px"},
                     ),
-                    html.Label("Axle loads (kN) — comma separated",
-                               style={"fontWeight": "600", "fontSize": "13px"}),
-                    dcc.Input(id="axle-loads", type="text", value="300, 300",
-                              style=_input_style(), debounce=True),
-                    html.Label("Axle spacings (m) — comma separated",
-                               style={"fontWeight": "600", "fontSize": "13px",
-                                       "marginTop": "6px"}),
-                    dcc.Input(id="axle-spacings", type="text", value="1.2",
-                              style=_input_style(), debounce=True),
                     html.Div(id="vehicle-summary",
                              style={"fontSize": "12px", "color": "#555",
                                     "marginTop": "6px"}),
@@ -210,49 +194,32 @@ app.layout = html.Div(
 
 
 # ---------------------------------------------------------------------------
-# Callback: populate axle fields from preset dropdown
-# ---------------------------------------------------------------------------
-@app.callback(
-    Output("axle-loads", "value"),
-    Output("axle-spacings", "value"),
-    Output("lm1-udl-hint", "style"),
-    Input("vehicle-preset", "value"),
-)
-def apply_preset(preset_name):
-    _hidden = {"display": "none"}
-    _visible = {"fontSize": "11px", "color": "#888",
-                "marginTop": "4px", "fontStyle": "italic"}
-    if preset_name and preset_name in PRESET_VEHICLES:
-        v = PRESET_VEHICLES[preset_name]
-        show_hint = _visible if preset_name.startswith("LM1") else _hidden
-        return (
-            ", ".join(str(x) for x in v["axle_loads"]),
-            ", ".join(str(x) for x in v["axle_spacings"]),
-            show_hint,
-        )
-    return no_update, no_update, no_update
-
-
-# ---------------------------------------------------------------------------
-# Callback: vehicle summary text
+# Callback: vehicle summary + LM1 hint visibility
 # ---------------------------------------------------------------------------
 @app.callback(
     Output("vehicle-summary", "children"),
-    Input("axle-loads", "value"),
-    Input("axle-spacings", "value"),
+    Output("lm1-udl-hint", "style"),
+    Input("vehicle-preset", "value"),
 )
-def update_vehicle_summary(loads_text, spacings_text):
-    try:
-        loads = _parse_csv_floats(loads_text or "")
-        spacings = _parse_csv_floats(spacings_text or "")
-    except ValueError:
-        return "Invalid input"
-    if not loads:
-        return "No axles defined"
+def update_vehicle_info(preset_name):
+    _hidden = {"display": "none"}
+    _visible = {"fontSize": "11px", "color": "#888",
+                "marginTop": "4px", "fontStyle": "italic"}
+    if not preset_name or preset_name not in PRESET_VEHICLES:
+        return "No vehicle selected", _hidden
+    v = PRESET_VEHICLES[preset_name]
+    loads = v["axle_loads"]
+    spacings = v["axle_spacings"]
     n = len(loads)
     total = sum(loads)
     length = sum(spacings)
-    return f"{n} axle(s) | total load {total:.0f} kN | vehicle length {length:.1f} m"
+    vgap = v.get("variable_gap")
+    summary = f"{n} axle(s) | {total:.0f} kN total | {length:.1f} m long"
+    if vgap:
+        gaps = ", ".join(str(g) for g in vgap["values"])
+        summary += f" | auto-gap [{gaps}] m"
+    show_hint = _visible if preset_name.startswith("LM1") else _hidden
+    return summary, show_hint
 
 
 # ---------------------------------------------------------------------------
@@ -265,13 +232,11 @@ def update_vehicle_summary(loads_text, spacings_text):
     Input("udl-w", "value"),
     Input("udl-start", "value"),
     Input("udl-end", "value"),
-    Input("axle-loads", "value"),
-    Input("axle-spacings", "value"),
+    Input("vehicle-preset", "value"),
     Input("n-steps", "value"),
-    State("vehicle-preset", "value"),
 )
 def update_graph(span, ei, udl_w, udl_a, udl_b,
-                 loads_text, spacings_text, n_steps, preset_name):
+                 preset_name, n_steps):
     span = float(span or 20)
     ei = float(ei or 0)
     udl_w = float(udl_w or 0)
@@ -279,16 +244,13 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
     udl_b = float(udl_b or span)
     n_steps = int(n_steps or 300)
 
-    try:
-        axle_loads = _parse_csv_floats(loads_text or "100")
-        axle_spacings = _parse_csv_floats(spacings_text or "")
-    except ValueError:
+    preset = PRESET_VEHICLES.get(preset_name) if preset_name else None
+    if preset:
+        axle_loads = list(preset["axle_loads"])
+        axle_spacings = list(preset["axle_spacings"])
+    else:
         axle_loads = [100]
         axle_spacings = []
-
-    if len(axle_spacings) < len(axle_loads) - 1:
-        axle_spacings += [0.0] * (len(axle_loads) - 1 - len(axle_spacings))
-    axle_spacings = axle_spacings[: len(axle_loads) - 1]
 
     udl_segments = []
     if udl_w > 0 and udl_a < udl_b:
@@ -300,7 +262,6 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
     # --- Build list of spacing variants to sweep ---
     # For SV vehicles with a variable inter-bogie gap, run all gap values
     # and keep the worst-case envelope.
-    preset = PRESET_VEHICLES.get(preset_name) if preset_name else None
     vgap = preset.get("variable_gap") if preset else None
 
     spacing_variants = []
