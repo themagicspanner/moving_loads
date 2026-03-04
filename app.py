@@ -147,8 +147,8 @@ app.layout = html.Div(
         html.P("EN 1991-2 load models — define a vehicle and UDL to see envelopes and critical load positions.",
                style={"textAlign": "center", "color": "#666", "marginTop": "0"}),
 
-        dcc.Store(id="figure-store"),
-        dcc.Download(id="pdf-download"),
+        # Hidden dummy output for the client-side PDF export callback
+        html.Div(id="pdf-dummy", style={"display": "none"}),
 
         html.Div(style={"display": "flex", "gap": "24px", "flexWrap": "wrap"}, children=[
 
@@ -284,7 +284,6 @@ def update_vehicle_info(preset_name):
     Output("main-graph", "figure"),
     Output("shear-table", "children"),
     Output("moment-table", "children"),
-    Output("figure-store", "data"),
     Input("beam-span", "value"),
     Input("udl-w", "value"),
     Input("udl-start", "value"),
@@ -525,25 +524,62 @@ def update_graph(span, udl_w, udl_a, udl_b,
         moment_axles, best_moment_spacings, span,
     )
 
-    return fig, shear_tbl, moment_tbl, fig.to_dict()
+    return fig, shear_tbl, moment_tbl
 
 
 # ---------------------------------------------------------------------------
-# Callback: PDF export
+# Callback: PDF export (client-side via Plotly.downloadImage → SVG → jsPDF)
 # ---------------------------------------------------------------------------
-@app.callback(
-    Output("pdf-download", "data"),
+app.clientside_callback(
+    """
+    async function(n_clicks) {
+        if (!n_clicks) { return window.dash_clientside.no_update; }
+
+        /* Lazily load jsPDF from CDN */
+        if (typeof window.jspdf === 'undefined') {
+            await new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js';
+                s.onload = resolve;
+                s.onerror = reject;
+                document.head.appendChild(s);
+            });
+        }
+
+        const graphDiv = document.getElementById('main-graph');
+        const svgText = await Plotly.toImage(graphDiv, {
+            format: 'svg', width: 1200, height: 1600,
+        });
+
+        /* svgText is a data-URI; convert to raw SVG string */
+        const svgString = decodeURIComponent(svgText.split(',')[1]);
+
+        /* Render SVG onto a canvas, then capture as image for the PDF */
+        const canvas = document.createElement('canvas');
+        canvas.width = 1200;
+        canvas.height = 1600;
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = reject;
+            img.src = svgText;
+        });
+        ctx.drawImage(img, 0, 0, 1200, 1600);
+
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ orientation: 'portrait', unit: 'px',
+                                format: [1200, 1600] });
+        pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, 1200, 1600);
+        pdf.save('beam_analysis.pdf');
+
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("pdf-dummy", "children"),
     Input("export-pdf-btn", "n_clicks"),
-    State("figure-store", "data"),
     prevent_initial_call=True,
 )
-def export_pdf(n_clicks, fig_dict):
-    if not fig_dict:
-        return no_update
-    fig = go.Figure(fig_dict)
-    fig.update_layout(width=1200, height=1600, font=dict(size=10))
-    pdf_bytes = fig.to_image(format="pdf")
-    return dcc.send_bytes(pdf_bytes, filename="beam_analysis.pdf")
 
 
 # ---------------------------------------------------------------------------
