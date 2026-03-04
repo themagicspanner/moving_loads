@@ -81,8 +81,6 @@ CLR_SHEAR = "#1f77b4"
 CLR_SHEAR_MIN = "#aec7e8"
 CLR_MOMENT = "#d62728"
 CLR_MOMENT_MIN = "#f5a0a0"
-CLR_DEFL = "#2ca02c"
-CLR_DEFL_MIN = "#98df8a"
 CLR_AXLE = "#e377c2"
 CLR_UDL = "rgba(255, 165, 0, 0.35)"
 CLR_UDL_LINE = "rgb(255, 140, 0)"
@@ -90,7 +88,6 @@ CLR_REACTION = "#17becf"
 CLR_BG = "#fafafa"
 CLR_ENVELOPE_FILL = "rgba(31,119,180,0.10)"
 CLR_MOMENT_FILL = "rgba(214,39,40,0.10)"
-CLR_DEFL_FILL = "rgba(44,160,44,0.10)"
 CLR_CRITICAL = "rgba(0,0,0,0.08)"
 
 
@@ -145,8 +142,6 @@ app.layout = html.Div(
 
                 _section("Beam", [
                     _labelled_input("Span (m)", "beam-span", 20, 1, 200, 0.5),
-                    _labelled_input("EI (kN·m²)", "beam-ei", 1e6, 1e3, 1e12, 1e3,
-                                    tooltip="Flexural rigidity — set to 0 to hide deflection"),
                 ]),
 
                 _section("UDL (uniformly distributed load)", [
@@ -258,17 +253,15 @@ def update_vehicle_info(preset_name):
     Output("shear-table", "children"),
     Output("moment-table", "children"),
     Input("beam-span", "value"),
-    Input("beam-ei", "value"),
     Input("udl-w", "value"),
     Input("udl-start", "value"),
     Input("udl-end", "value"),
     Input("vehicle-preset", "value"),
     Input("vehicle-daf", "value"),
 )
-def update_graph(span, ei, udl_w, udl_a, udl_b,
+def update_graph(span, udl_w, udl_a, udl_b,
                  preset_name, daf):
     span = float(span or 20)
-    ei = float(ei or 0)
     udl_w = float(udl_w or 0)
     udl_a = float(udl_a or 0)
     udl_b = float(udl_b or span)
@@ -292,7 +285,6 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
         udl_segments.append((max(udl_a, 0), min(udl_b, span), udl_w))
 
     n_pts = 501
-    EI_val = ei if ei > 0 else None
 
     # --- Build list of spacing variants to sweep ---
     # For SV vehicles with a variable inter-bogie gap, run all gap values
@@ -310,23 +302,22 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
         spacing_variants.append(list(axle_spacings))
 
     # --- Compute envelopes (worst-case across all gap variants) ---
-    x = s_max = s_min = m_max = m_min = d_max = d_min = None
+    x = s_max = s_min = m_max = m_min = None
     crit_shear_fx = crit_moment_fx = 0.0
     best_shear_spacings = best_moment_spacings = axle_spacings
     best_shear_abs = 0.0
     best_moment_val = 0.0
 
     for sp in spacing_variants:
-        (xi, sv_max, sv_min, mv_max, mv_min, dv_max, dv_min,
+        (xi, sv_max, sv_min, mv_max, mv_min, _dv_max, _dv_min,
          cs_fx, cm_fx) = compute_envelopes(
             span, sp, axle_loads, udl_segments,
-            n_points=n_pts, n_steps=n_steps, EI=EI_val,
+            n_points=n_pts, n_steps=n_steps,
         )
         if x is None:
             x = xi
             s_max, s_min = sv_max, sv_min
             m_max, m_min = mv_max, mv_min
-            d_max, d_min = dv_max, dv_min
             crit_shear_fx, crit_moment_fx = cs_fx, cm_fx
             best_shear_spacings = best_moment_spacings = sp
             best_shear_abs = max(abs(sv_max.max()), abs(sv_min.min()))
@@ -337,9 +328,6 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
             s_min = np.minimum(s_min, sv_min)
             m_max = np.maximum(m_max, mv_max)
             m_min = np.minimum(m_min, mv_min)
-            if dv_max is not None and d_max is not None:
-                d_max = np.maximum(d_max, dv_max)
-                d_min = np.minimum(d_min, dv_min)
             # Track which gap produced the worst shear / moment
             shear_abs = max(abs(sv_max.max()), abs(sv_min.min()))
             if shear_abs > best_shear_abs:
@@ -357,7 +345,7 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
         axles = vehicle_positions_at_offset(spacings, axle_loads, front_x)
         on_beam = [(p, P) for p, P in axles if 0 <= p <= span]
         return axles, solve_simply_supported(
-            span, on_beam, udl_segments, n_points=n_pts, EI=EI_val,
+            span, on_beam, udl_segments, n_points=n_pts,
         )
 
     shear_axles, (_, shear_v, shear_m, _, shear_RA, shear_RB) = \
@@ -366,10 +354,8 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
         _solve_at(crit_moment_fx, best_moment_spacings)
 
     # --- Build figure ---
-    show_deflection = ei > 0
     # Rows: beam@shear, SFD, shear envelope, beam@moment, BMD, moment envelope
-    #        + optionally deflection envelope
-    n_rows = 7 if show_deflection else 6
+    n_rows = 6
     row_titles = [
         "Vehicle position for max shear",
         "Shear force diagram (critical case)",
@@ -378,11 +364,8 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
         "Bending moment diagram (critical case)",
         "Bending moment envelope",
     ]
-    if show_deflection:
-        row_titles.append("Deflection envelope (mm)")
 
-    heights = [0.12, 0.15, 0.15, 0.12, 0.15, 0.15, 0.16] if show_deflection \
-        else [0.13, 0.17, 0.17, 0.13, 0.20, 0.20]
+    heights = [0.13, 0.17, 0.17, 0.13, 0.20, 0.20]
 
     fig = make_subplots(
         rows=n_rows, cols=1, shared_xaxes=True,
@@ -472,30 +455,6 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
         hovertemplate="x=%{x:.2f} m<br>M_min=%{customdata:.1f} kN·m<extra></extra>",
     ), row=6, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=6, col=1)
-
-    # ================================================================
-    # DEFLECTION ENVELOPE — row 7 (optional)
-    # ================================================================
-    if show_deflection:
-        fig.add_trace(go.Scatter(
-            x=np.concatenate([x, x[::-1]]),
-            y=np.concatenate([d_max * 1000, d_min[::-1] * 1000]),
-            fill="toself", fillcolor=CLR_DEFL_FILL,
-            line=dict(width=0), hoverinfo="skip",
-            name="Deflection envelope", showlegend=True,
-        ), row=7, col=1)
-        fig.add_trace(go.Scatter(
-            x=x, y=d_max * 1000, mode="lines",
-            line=dict(color=CLR_DEFL, width=2), name="d_max",
-            hovertemplate="x=%{x:.2f} m<br>d_max=%{y:.3f} mm<extra></extra>",
-        ), row=7, col=1)
-        fig.add_trace(go.Scatter(
-            x=x, y=d_min * 1000, mode="lines",
-            line=dict(color=CLR_DEFL_MIN, width=2), name="d_min",
-            hovertemplate="x=%{x:.2f} m<br>d_min=%{y:.3f} mm<extra></extra>",
-        ), row=7, col=1)
-        fig.add_hline(y=0, line_dash="dot", line_color="#aaa", row=7, col=1)
-        fig.update_yaxes(title_text="mm", row=7, col=1)
 
     # ---- Axis labels ----
     fig.update_yaxes(title_text="kN", row=2, col=1)
