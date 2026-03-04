@@ -387,7 +387,7 @@ def update_graph(span, udl_w, udl_a, udl_b,
         rows=n_rows, cols=1, shared_xaxes=True,
         row_heights=heights,
         subplot_titles=row_titles,
-        vertical_spacing=0.04,
+        vertical_spacing=0.06,
     )
 
     # ================================================================
