@@ -147,6 +147,9 @@ app.layout = html.Div(
         html.P("EN 1991-2 load models — define a vehicle and UDL to see envelopes and critical load positions.",
                style={"textAlign": "center", "color": "#666", "marginTop": "0"}),
 
+        dcc.Store(id="figure-store"),
+        dcc.Download(id="pdf-download"),
+
         html.Div(style={"display": "flex", "gap": "24px", "flexWrap": "wrap"}, children=[
 
             # ---- LEFT PANEL ----
@@ -201,6 +204,24 @@ app.layout = html.Div(
 
             # ---- RIGHT PANEL ----
             html.Div(style={"flex": "1 1 700px", "minWidth": "500px"}, children=[
+                html.Div(
+                    style={"display": "flex", "justifyContent": "flex-end",
+                           "marginBottom": "8px"},
+                    children=[
+                        html.Button(
+                            "Export PDF",
+                            id="export-pdf-btn",
+                            style={
+                                "padding": "6px 16px",
+                                "fontSize": "13px",
+                                "borderRadius": "4px",
+                                "border": "1px solid #ccc",
+                                "background": "#fff",
+                                "cursor": "pointer",
+                            },
+                        ),
+                    ],
+                ),
                 dcc.Loading(
                     dcc.Graph(id="main-graph", style={"height": "90vh"},
                               config={"displayModeBar": False}),
@@ -263,6 +284,7 @@ def update_vehicle_info(preset_name):
     Output("main-graph", "figure"),
     Output("shear-table", "children"),
     Output("moment-table", "children"),
+    Output("figure-store", "data"),
     Input("beam-span", "value"),
     Input("udl-w", "value"),
     Input("udl-start", "value"),
@@ -503,7 +525,25 @@ def update_graph(span, udl_w, udl_a, udl_b,
         moment_axles, best_moment_spacings, span,
     )
 
-    return fig, shear_tbl, moment_tbl
+    return fig, shear_tbl, moment_tbl, fig.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Callback: PDF export
+# ---------------------------------------------------------------------------
+@app.callback(
+    Output("pdf-download", "data"),
+    Input("export-pdf-btn", "n_clicks"),
+    State("figure-store", "data"),
+    prevent_initial_call=True,
+)
+def export_pdf(n_clicks, fig_dict):
+    if not fig_dict:
+        return no_update
+    fig = go.Figure(fig_dict)
+    fig.update_layout(width=1200, height=1600, font=dict(size=10))
+    pdf_bytes = fig.to_image(format="pdf")
+    return dcc.send_bytes(pdf_bytes, filename="beam_analysis.pdf")
 
 
 # ---------------------------------------------------------------------------
