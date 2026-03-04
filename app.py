@@ -199,6 +199,14 @@ app.layout = html.Div(
                               config={"displayModeBar": False}),
                     type="circle",
                 ),
+                html.Div(
+                    style={"display": "flex", "gap": "24px", "flexWrap": "wrap",
+                           "marginTop": "16px"},
+                    children=[
+                        html.Div(id="shear-table", style={"flex": "1 1 300px"}),
+                        html.Div(id="moment-table", style={"flex": "1 1 300px"}),
+                    ],
+                ),
             ]),
         ]),
     ],
@@ -247,6 +255,8 @@ def update_vehicle_info(preset_name):
 # ---------------------------------------------------------------------------
 @app.callback(
     Output("main-graph", "figure"),
+    Output("shear-table", "children"),
+    Output("moment-table", "children"),
     Input("beam-span", "value"),
     Input("beam-ei", "value"),
     Input("udl-w", "value"),
@@ -508,7 +518,17 @@ def update_graph(span, ei, udl_w, udl_a, udl_b,
     for i in range(1, n_rows + 1):
         fig.update_xaxes(range=[0, span], row=i, col=1)
 
-    return fig
+    # --- Axle position tables ---
+    shear_tbl = _build_axle_table(
+        "Axle positions — max shear case",
+        shear_axles, best_shear_spacings, span,
+    )
+    moment_tbl = _build_axle_table(
+        "Axle positions — max moment case",
+        moment_axles, best_moment_spacings, span,
+    )
+
+    return fig, shear_tbl, moment_tbl
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +664,42 @@ def _draw_triangle(fig, x0, y0, size, span, roller=False, row=1):
 
 def _arrow_height(load, span):
     return max(0.5, min(3.5, 1.0 + 2.0 * abs(load) / 200)) * span / 20
+
+
+def _build_axle_table(title, axles, spacings, span):
+    """Return an html.Div containing a titled table of axle positions."""
+    _cell = {"padding": "4px 10px", "borderBottom": "1px solid #e0e0e0",
+             "fontSize": "12px", "textAlign": "right"}
+    _hdr = {**_cell, "fontWeight": "600", "textAlign": "center",
+            "background": "#f5f5f5"}
+
+    header = html.Tr([
+        html.Th("Axle", style=_hdr),
+        html.Th("Load (kN)", style=_hdr),
+        html.Th("Spacing (m)", style=_hdr),
+        html.Th("Dist. from left support (m)", style=_hdr),
+    ])
+
+    rows = []
+    for i, (pos, P) in enumerate(axles):
+        on_beam = 0 <= pos <= span
+        row_style = {} if on_beam else {"color": "#bbb"}
+        spacing_text = f"{spacings[i - 1]:.2f}" if i > 0 else "—"
+        rows.append(html.Tr([
+            html.Td(str(i + 1), style={**_cell, "textAlign": "center", **row_style}),
+            html.Td(f"{P:.1f}", style={**_cell, **row_style}),
+            html.Td(spacing_text, style={**_cell, **row_style}),
+            html.Td(f"{pos:.2f}", style={**_cell, **row_style}),
+        ]))
+
+    return html.Div([
+        html.H4(title, style={"fontSize": "14px", "marginBottom": "6px"}),
+        html.Table(
+            [html.Thead(header), html.Tbody(rows)],
+            style={"borderCollapse": "collapse", "width": "100%",
+                   "border": "1px solid #e0e0e0", "borderRadius": "4px"},
+        ),
+    ])
 
 
 # ---------------------------------------------------------------------------
