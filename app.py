@@ -74,6 +74,18 @@ PRESET_VEHICLES = {
 }
 
 # ---------------------------------------------------------------------------
+# UK NA Table NA.2 — Dynamic amplification factors for SV vehicles
+# ---------------------------------------------------------------------------
+# Keyed by the basic (unfactored) axle load in kN.
+SV_AXLE_DAF = {
+    100: 1.20,
+    130: 1.16,
+    165: 1.12,
+    180: 1.10,
+    225: 1.07,
+}
+
+# ---------------------------------------------------------------------------
 # Colour palette
 # ---------------------------------------------------------------------------
 CLR_BEAM = "#4a4a4a"
@@ -238,8 +250,7 @@ def update_vehicle_info(preset_name):
     show_hint = _visible if preset_name.startswith("LM1") else _hidden
     daf = v.get("daf", 1.0)
     if preset_name.startswith("LM3"):
-        daf_hint = ("LM3 axle loads do not include dynamic effects. "
-                    "Set DAF per UK NA (e.g. 1.0 good surface, up to 1.3 poor).")
+        daf_hint = ("Per-axle DAFs from UK NA Table NA.2 applied automatically.")
     else:
         daf_hint = "Dynamic effects already included in characteristic values."
     return summary, show_hint, daf, daf_hint
@@ -269,8 +280,13 @@ def update_graph(span, udl_w, udl_a, udl_b,
 
     preset = PRESET_VEHICLES.get(preset_name) if preset_name else None
     if preset:
-        axle_loads = [P * daf for P in preset["axle_loads"]]
+        base_loads = preset["axle_loads"]
         axle_spacings = list(preset["axle_spacings"])
+        if preset_name.startswith("LM3"):
+            # Apply per-axle DAFs from UK NA Table NA.2
+            axle_loads = [P * SV_AXLE_DAF.get(P, 1.0) for P in base_loads]
+        else:
+            axle_loads = [P * daf for P in base_loads]
     else:
         axle_loads = [100 * daf]
         axle_spacings = []
