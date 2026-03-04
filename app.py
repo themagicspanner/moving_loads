@@ -30,36 +30,38 @@ from beam_analysis import (
 # and the critical (worst-case) gap is selected for each span.
 PRESET_VEHICLES = {
     # ── EN 1991-2 §4.3.2  Load Model 1 – Tandem System ─────────────────
+    # LM1 characteristic values already include an allowance for dynamic
+    # effects (EN 1991-2 §4.3.2(3)), so the default DAF is 1.0.
     "LM1 – Lane 1 Tandem  (2 × 300 kN)": {
         "axle_loads": [300, 300],
         "axle_spacings": [1.2],
-    },
-    "LM1 – Lane 2 Tandem  (2 × 200 kN)": {
-        "axle_loads": [200, 200],
-        "axle_spacings": [1.2],
-    },
-    "LM1 – Lane 3 Tandem  (2 × 100 kN)": {
-        "axle_loads": [100, 100],
-        "axle_spacings": [1.2],
+        "daf": 1.0,
     },
     # ── EN 1991-2 §4.3.3  Load Model 2 – Single Axle ───────────────────
+    # LM2 characteristic values already include dynamic effects
+    # (EN 1991-2 §4.3.3(2)), so the default DAF is 1.0.
     "LM2 – Single Axle  (400 kN)": {
         "axle_loads": [400],
         "axle_spacings": [],
+        "daf": 1.0,
     },
     # ── EN 1991-2 §4.3.4 / UK NA  Load Model 3 – Special Vehicles ───────
     # SV80 per UK NA: 6 axles of 130 kN (780 kN total), two groups of 3
     # at 1.2 m; variable gap between groups auto-selected from 1.2/5.0/9.0 m.
+    # LM3 axle loads do NOT include dynamic effects.  Apply a DAF per
+    # UK NA Table NA.3 (typically 1.0 for good surface, up to 1.3 for poor).
     "LM3 – SV80  (6 × 130 kN)": {
         "axle_loads": [130, 130, 130, 130, 130, 130],
         "axle_spacings": [1.2, 1.2, 1.2, 1.2, 1.2],
         "variable_gap": {"index": 2, "values": [1.2, 5.0, 9.0]},
+        "daf": 1.0,
     },
     # SV100 per UK NA: 6 axles of 165 kN (990 kN total), same layout.
     "LM3 – SV100  (6 × 165 kN)": {
         "axle_loads": [165, 165, 165, 165, 165, 165],
         "axle_spacings": [1.2, 1.2, 1.2, 1.2, 1.2],
         "variable_gap": {"index": 2, "values": [1.2, 5.0, 9.0]},
+        "daf": 1.0,
     },
     # SV196 per UK NA: 8 × 165 kN trailer + 180, 180, 100 kN tractor (1780 kN).
     # Variable gap between the two 4-axle trailer bogies.
@@ -67,6 +69,7 @@ PRESET_VEHICLES = {
         "axle_loads": [165, 165, 165, 165, 165, 165, 165, 165, 180, 180, 100],
         "axle_spacings": [1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 4.0, 1.6, 4.4],
         "variable_gap": {"index": 3, "values": [1.2, 5.0, 9.0]},
+        "daf": 1.0,
     },
 }
 
@@ -164,9 +167,22 @@ app.layout = html.Div(
                     html.Div(id="vehicle-summary",
                              style={"fontSize": "12px", "color": "#555",
                                     "marginTop": "6px"}),
+                    _labelled_input(
+                        "Dynamic amplification factor (DAF)",
+                        "vehicle-daf", 1.0, 0.5, 2.0, 0.01,
+                        tooltip="Multiplier applied to all axle loads. "
+                                "LM1/LM2 already include dynamic effects (1.0). "
+                                "For LM3 set per UK NA Table NA.3.",
+                    ),
                     html.Div(
-                        "LM1 also requires a UDL: Lane 1 → 27 kN/m, "
-                        "Lanes 2-3 → 7.5 kN/m (9 or 2.5 kN/m² × 3 m lane width). "
+                        id="daf-hint",
+                        style={"fontSize": "11px", "color": "#888",
+                               "marginTop": "-2px", "marginBottom": "6px",
+                               "fontStyle": "italic"},
+                    ),
+                    html.Div(
+                        "LM1 also requires a UDL: 27 kN/m "
+                        "(9 kN/m² × 3 m lane width). "
                         "Apply via the UDL panel above.",
                         id="lm1-udl-hint",
                         style={"fontSize": "11px", "color": "#888",
@@ -174,10 +190,6 @@ app.layout = html.Div(
                     ),
                 ]),
 
-                _section("Envelope resolution", [
-                    _labelled_input("Vehicle positions", "n-steps", 300, 50, 2000, 50,
-                                    tooltip="Number of vehicle positions used to build the envelope"),
-                ]),
             ]),
 
             # ---- RIGHT PANEL ----
@@ -199,6 +211,8 @@ app.layout = html.Div(
 @app.callback(
     Output("vehicle-summary", "children"),
     Output("lm1-udl-hint", "style"),
+    Output("vehicle-daf", "value"),
+    Output("daf-hint", "children"),
     Input("vehicle-preset", "value"),
 )
 def update_vehicle_info(preset_name):
@@ -206,7 +220,7 @@ def update_vehicle_info(preset_name):
     _visible = {"fontSize": "11px", "color": "#888",
                 "marginTop": "4px", "fontStyle": "italic"}
     if not preset_name or preset_name not in PRESET_VEHICLES:
-        return "No vehicle selected", _hidden
+        return "No vehicle selected", _hidden, 1.0, ""
     v = PRESET_VEHICLES[preset_name]
     loads = v["axle_loads"]
     spacings = v["axle_spacings"]
@@ -219,7 +233,13 @@ def update_vehicle_info(preset_name):
         gaps = ", ".join(str(g) for g in vgap["values"])
         summary += f" | auto-gap [{gaps}] m"
     show_hint = _visible if preset_name.startswith("LM1") else _hidden
-    return summary, show_hint
+    daf = v.get("daf", 1.0)
+    if preset_name.startswith("LM3"):
+        daf_hint = ("LM3 axle loads do not include dynamic effects. "
+                    "Set DAF per UK NA (e.g. 1.0 good surface, up to 1.3 poor).")
+    else:
+        daf_hint = "Dynamic effects already included in characteristic values."
+    return summary, show_hint, daf, daf_hint
 
 
 # ---------------------------------------------------------------------------
@@ -233,24 +253,29 @@ def update_vehicle_info(preset_name):
     Input("udl-start", "value"),
     Input("udl-end", "value"),
     Input("vehicle-preset", "value"),
-    Input("n-steps", "value"),
+    Input("vehicle-daf", "value"),
 )
 def update_graph(span, ei, udl_w, udl_a, udl_b,
-                 preset_name, n_steps):
+                 preset_name, daf):
     span = float(span or 20)
     ei = float(ei or 0)
     udl_w = float(udl_w or 0)
     udl_a = float(udl_a or 0)
     udl_b = float(udl_b or span)
-    n_steps = int(n_steps or 300)
+    daf = float(daf or 1.0)
 
     preset = PRESET_VEHICLES.get(preset_name) if preset_name else None
     if preset:
-        axle_loads = list(preset["axle_loads"])
+        axle_loads = [P * daf for P in preset["axle_loads"]]
         axle_spacings = list(preset["axle_spacings"])
     else:
-        axle_loads = [100]
+        axle_loads = [100 * daf]
         axle_spacings = []
+
+    # Auto-calculate n_steps to position vehicle at 0.1 m centres
+    vehicle_length = sum(axle_spacings)
+    sweep_distance = span + 2 * vehicle_length
+    n_steps = max(int(round(sweep_distance / 0.1)) + 1, 50)
 
     udl_segments = []
     if udl_w > 0 and udl_a < udl_b:
